@@ -11,10 +11,12 @@ try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
     DB_URI = st.secrets["DB_URI"] 
-except Exception as e:
-    st.error("⚠️ Ошибка: Секреты не настроены. Добавьте GROQ_API_KEY, ADMIN_PASSWORD и DB_URI в настройках Streamlit Cloud.")
+except KeyError as e:
+    st.error(f"⚠️ В Secrets не хватает ключа: {e}")
     st.stop()
-
+except Exception as e:
+    st.error(f"⚠️ Ошибка при чтении секретов: {e}")
+    st.stop()
 # ==========================================
 # РАБОТА С POSTGRESQL (SUPABASE)
 # ==========================================
