@@ -12,10 +12,9 @@ try:
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
     DB_URI = st.secrets["DB_URI"] 
 except KeyError as e:
-    st.error(f"⚠️ В Secrets не хватает ключа: {e}")
-    st.stop()
-except Exception as e:
-    st.error(f"⚠️ Ошибка при чтении секретов: {e}")
+    st.error(f"⚠️ Ошибка: ключ {e} не найден.")
+    st.write("Вот какие ключи я вижу в Secrets:")
+    st.write(list(st.secrets.keys())) # <--- ЭТО ВЫВЕДЕТ СПИСОК ВСЕХ КЛЮЧЕЙ
     st.stop()
 # ==========================================
 # РАБОТА С POSTGRESQL (SUPABASE)
