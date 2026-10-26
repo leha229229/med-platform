@@ -1,9 +1,8 @@
 import streamlit as st
-import sqlite3
+import psycopg2
 import requests
 import json
 import time
-import streamlit.components.v1 as components
 
 # ==========================================
 # НАСТРОЙКИ (БЕРУТСЯ ИЗ SECRETS STREAMLIT CLOUD)
@@ -11,45 +10,31 @@ import streamlit.components.v1 as components
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
+    DB_URI = st.secrets["DB_URI"] 
 except Exception as e:
-    st.error("⚠️ Ошибка: Секреты не настроены. Добавьте GROQ_API_KEY и ADMIN_PASSWORD в настройках Streamlit Cloud.")
+    st.error("⚠️ Ошибка: Секреты не настроены. Добавьте GROQ_API_KEY, ADMIN_PASSWORD и DB_URI в настройках Streamlit Cloud.")
     st.stop()
 
 # ==========================================
-# РАБОТА С БАЗОЙ ДАННЫХ (SQLite)
+# РАБОТА С POSTGRESQL (SUPABASE)
 # ==========================================
 def get_db_connection():
-    conn = sqlite3.connect("platform.db", check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return psycopg2.connect(DB_URI)
 
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Создаем таблицу (если нет) с колонкой status
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cases (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             title TEXT,
             description TEXT,
             difficulty TEXT,
             company TEXT,
-            status TEXT DEFAULT 'approved'
+            status TEXT DEFAULT 'pending'
         )
     ''')
-    
-    # Миграция для старых баз (если колонки status нет)
-    try:
-        cursor.execute("ALTER TABLE cases ADD COLUMN status TEXT DEFAULT 'approved'")
-    except sqlite3.OperationalError:
-        pass
-        
-    # Если база пустая — добавляем тестовый кейс
-    cursor.execute("SELECT COUNT(*) FROM cases")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO cases (title, description, difficulty, company, status) VALUES (?, ?, ?, ?, ?)", 
-                       ("Кейс от Р-Фарм: Оптимизация поставок", "Сократить логистические издержки на 15%", "Средний", "Р-Фарм", "approved"))
-        conn.commit()
+    conn.commit()
     conn.close()
 
 init_db()
@@ -60,7 +45,7 @@ def get_approved_cases():
     cursor.execute("SELECT id, title, description, difficulty, company FROM cases WHERE status = 'approved'")
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4]} for r in rows]
 
 def get_pending_cases():
     conn = get_db_connection()
@@ -68,14 +53,13 @@ def get_pending_cases():
     cursor.execute("SELECT id, title, description, difficulty, company FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4]} for r in rows]
 
 def add_case(title, description, difficulty, company):
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Новые кейсы отправляются на модерацию
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status) VALUES (?, ?, ?, ?, 'pending')",
+        "INSERT INTO cases (title, description, difficulty, company, status) VALUES (%s, %s, %s, %s, 'pending')",
         (title, description, difficulty, company)
     )
     conn.commit()
@@ -84,20 +68,21 @@ def add_case(title, description, difficulty, company):
 def update_case_status(case_id, new_status):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE cases SET status = ? WHERE id = ?", (new_status, case_id))
+    cursor.execute("UPDATE cases SET status = %s WHERE id = %s", (new_status, case_id))
     conn.commit()
     conn.close()
 
 def delete_case(case_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM cases WHERE id = ?", (case_id,))
+    cursor.execute("DELETE FROM cases WHERE id = %s", (case_id,))
     conn.commit()
     conn.close()
 
 # ==========================================
-# JS-ЗАЩИТА ОТ ВСТАВКИ ТЕКСТА (Copy-Paste)
+# JS-ЗАЩИТА ОТ ВСТАВКИ (БЕЗ WARNINGS)
 # ==========================================
+# Используем st.markdown с unsafe_allow_html, чтобы внедрить JS без устаревших компонентов
 js_block_paste = """
 <script>
     setTimeout(function() {
@@ -105,14 +90,14 @@ js_block_paste = """
         textareas.forEach(ta => {
             ta.addEventListener('paste', function(e) {
                 e.preventDefault();
-                alert('Вставка текста запрещена! Пожалуйста, введите ответ вручную, чтобы показать свои знания.');
+                alert('Вставка текста запрещена! Пожалуйста, введите ответ вручную.');
             });
             ta.addEventListener('contextmenu', function(e) { e.preventDefault(); });
         });
     }, 1000);
 </script>
 """
-components.html(js_block_paste, height=0)
+st.markdown(js_block_paste, unsafe_allow_html=True)
 
 # ==========================================
 # АВТОРИЗАЦИЯ В САЙДБАРЕ
@@ -136,7 +121,6 @@ st.set_page_config(page_title="МедПлатформа", page_icon="🩺")
 st.title("🩺 Платформа для студентов-медиков")
 st.write("Добро пожаловать! Выбери кейс, чтобы начать.")
 
-# Если админ - показываем 3 вкладки, если студент - 2
 if is_admin:
     tabs = st.tabs(["📚 Список кейсов", "➕ Предложить кейс", "🛡️ Модерация"])
     tab1, tab2, tab3 = tabs
@@ -158,7 +142,7 @@ with tab1:
                 
                 if st.button(f"Решить кейс #{case['id']}", key=f"btn_{case['id']}"):
                     st.session_state['current_case'] = case
-                    st.session_state['start_time'] = time.time() # Запуск таймера
+                    st.session_state['start_time'] = time.time()
                 st.divider()
     else:
         st.info("Пока нет доступных кейсов.")
@@ -218,12 +202,10 @@ if 'current_case' in st.session_state:
     st.divider()
     st.subheader(f"Решение кейса: {case['title']}")
     
-    # Добавляем уникальный key, чтобы JS понимал, куда вешать защиту
     student_answer = st.text_area("Напиши свой ответ (решение проблемы):", height=150, key="student_answer_area")
     
     if st.button("Отправить на проверку ИИ"):
         if student_answer:
-            # Расчет скорости печати
             time_spent = time.time() - st.session_state.get('start_time', time.time())
             chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
             
@@ -259,7 +241,6 @@ if 'current_case' in st.session_state:
                     response.raise_for_status()
                     response_text = response.json()['choices'][0]['message']['content']
                     
-                    # Парсинг ответа ИИ
                     score = "Не распознана"
                     feedback = response_text
                     ai_suspect = "NO"
@@ -269,21 +250,17 @@ if 'current_case' in st.session_state:
                         elif "Фидбек:" in line: feedback = line.replace("Фидбек:", "").strip()
                         elif "AI_SUSPECT:" in line: ai_suspect = line.replace("AI_SUSPECT:", "").strip().upper()
                     
-                    # Убираем технический тег из фидбека
                     if "AI_SUSPECT:" in response_text:
                         feedback = response_text.split("Фидбек:")[1].split("AI_SUSPECT:")[0].strip()
                         
                     st.success(f"Оценка: {score}/10")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
-                    # ЛОГИКА МЕТА-АНАЛИЗА (ПРОВЕРКА ПРОВЕРКИ)
                     if ai_suspect == "YES":
                         if chars_per_minute > 500:
                             st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин). Пожалуйста, перепишите ответ своими словами.")
                         elif chars_per_minute < 300:
-                            # ИИ подозревает, но человек печатал нормально
                             st.success("✅ Вердикт антиплагиата: Чисто.")
-                            # Скрытый флаг для админа
                             if is_admin:
                                 st.sidebar.warning(f"⚠️ Скрытый флаг: Кейс {case['id']}. ИИ подозревает, но скорость {int(chars_per_minute)} симв/мин.")
                             else:
