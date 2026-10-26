@@ -5,16 +5,7 @@ import json
 import time
 
 # ==========================================
-# НАСТРОЙКИ (БЕРУТСЯ ИЗ SECRETS STREAMLIT CLOUD)
-# ==========================================
-import streamlit as st
-import psycopg2
-import requests
-import json
-import time
-
-# ==========================================
-# НАСТРОЙКИ (КЛЮЧИ БЕРЕМ ИЗ SECRETS, А БАЗУ ПИШЕМ ПРЯМО В КОД)
+# НАСТРОЙКИ (КЛЮЧИ ИЗ SECRETS, БАЗА В КОДЕ)
 # ==========================================
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
@@ -23,8 +14,9 @@ except Exception as e:
     st.error("⚠️ Ошибка: Не настроены секреты GROQ_API_KEY или ADMIN_PASSWORD.")
     st.stop()
 
-# ТВОЯ СТРОКА ПОДКЛЮЧЕНИЯ К SUPABASE (ВСТАВЬ СВОЮ, С ПАРОЛЕМ)
+# СТРОКА ПОДКЛЮЧЕНИЯ К SUPABASE (ВСТАВЬ СВОЮ, С ПАРОЛЕМ)
 DB_URI = "postgresql://postgres.dnmxpwggsbyrgqsegmcm:zqE-J4a-3hh-FwL@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+
 # ==========================================
 # РАБОТА С POSTGRESQL (SUPABASE)
 # ==========================================
@@ -90,9 +82,8 @@ def delete_case(case_id):
     conn.close()
 
 # ==========================================
-# JS-ЗАЩИТА ОТ ВСТАВКИ (БЕЗ WARNINGS)
+# JS-ЗАЩИТА ОТ ВСТАВКИ
 # ==========================================
-# Используем st.markdown с unsafe_allow_html, чтобы внедрить JS без устаревших компонентов
 js_block_paste = """
 <script>
     setTimeout(function() {
