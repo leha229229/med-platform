@@ -3,7 +3,7 @@ import psycopg2
 import requests
 import json
 import time
-import re  # Регулярные выражения для надежного парсинга
+import re
 
 # ==========================================
 # НАСТРОЙКИ
@@ -15,11 +15,11 @@ except Exception as e:
     st.error("⚠️ Ошибка: Не настроены секреты GROQ_API_KEY или ADMIN_PASSWORD.")
     st.stop()
 
-# СТРОКА ПОДКЛЮЧЕНИЯ К SUPABASE (ЗАМЕНИ НА СВОЮ)
+# СТРОКА ПОДКЛЮЧЕНИЯ К SUPABASE
 DB_URI = "postgresql://postgres.dnmxpwggsbyrgqsegmcm:zqE-J4a-3hh-FwL@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
 
 # ==========================================
-# РАБОТА С POSTGRESQL (SUPABASE)
+# РАБОТА С POSTGRESQL
 # ==========================================
 def get_db_connection():
     return psycopg2.connect(DB_URI)
@@ -34,7 +34,8 @@ def init_db():
             description TEXT,
             difficulty TEXT,
             company TEXT,
-            status TEXT DEFAULT 'pending'
+            status TEXT DEFAULT 'pending',
+            correct_answer TEXT
         )
     ''')
     conn.commit()
@@ -45,25 +46,25 @@ init_db()
 def get_approved_cases():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, description, difficulty, company FROM cases WHERE status = 'approved'")
+    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer FROM cases WHERE status = 'approved'")
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4]} for r in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5]} for r in rows]
 
 def get_pending_cases():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, description, difficulty, company FROM cases WHERE status = 'pending'")
+    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4]} for r in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5]} for r in rows]
 
-def add_case(title, description, difficulty, company):
+def add_case(title, description, difficulty, company, correct_answer):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status) VALUES (%s, %s, %s, %s, 'pending')",
-        (title, description, difficulty, company)
+        "INSERT INTO cases (title, description, difficulty, company, status, correct_answer) VALUES (%s, %s, %s, %s, 'pending', %s)",
+        (title, description, difficulty, company, correct_answer)
     )
     conn.commit()
     conn.close()
@@ -102,10 +103,9 @@ js_block_paste = """
 st.markdown(js_block_paste, unsafe_allow_html=True)
 
 # ==========================================
-# АВТОРИЗАЦИЯ В САЙДБАРЕ
+# АВТОРИЗАЦИЯ
 # ==========================================
 st.sidebar.title("Управление")
-st.sidebar.caption("Введите пароль для доступа к админ-панели.")
 admin_pass_input = st.sidebar.text_input("Пароль администратора", type="password")
 
 is_admin = False
@@ -117,21 +117,17 @@ if admin_pass_input:
         st.sidebar.error("❌ Неверный пароль")
 
 # ==========================================
-# ИНТЕРФЕЙС (ВКЛАДКИ)
+# ИНТЕРФЕЙС
 # ==========================================
 st.set_page_config(page_title="МедПлатформа", page_icon="🩺")
 st.title("🩺 Платформа для студентов-медиков")
-st.write("Добро пожаловать! Выбери кейс, чтобы начать.")
 
 if is_admin:
-    tabs = st.tabs(["📚 Список кейсов", "➕ Предложить кейс", "🛡️ Модерация"])
-    tab1, tab2, tab3 = tabs
+    tab1, tab2, tab3 = st.tabs(["📚 Список кейсов", "➕ Предложить кейс", "🛡️ Модерация"])
 else:
-    tabs = st.tabs(["📚 Список кейсов", "➕ Предложить кейс"])
-    tab1, tab2 = tabs
+    tab1, tab2 = st.tabs(["📚 Список кейсов", "➕ Предложить кейс"])
     tab3 = None
 
-# --- ВКЛАДКА 1: СПИСОК КЕЙСОВ ---
 with tab1:
     st.subheader("Доступные кейсы")
     cases = get_approved_cases()
@@ -157,29 +153,28 @@ with tab1:
     else:
         st.info("Пока нет доступных кейсов.")
 
-# --- ВКЛАДКА 2: ПРЕДЛОЖИТЬ КЕЙС ---
 with tab2:
     st.subheader("Предложить новый кейс")
     st.info("💡 Ваш кейс будет опубликован на платформе только после проверки администратором.")
     
     with st.form("add_case_form"):
         new_title = st.text_input("Название кейса")
-        new_company = st.text_input("Компания (например, Р-Фарм)")
+        new_company = st.text_input("Компания")
         new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
-        new_description = st.text_area("Описание задачи")
+        new_description = st.text_area("Описание задачи (симптомы)")
+        new_correct_answer = st.text_area("Эталонный ответ (правильный диагноз)") # НОВОЕ ПОЛЕ
         
         submit_button = st.form_submit_button("Отправить на модерацию")
         
         if submit_button:
-            if new_title and new_company:
-                add_case(new_title, new_description, new_difficulty, new_company)
-                st.success("✅ Кейс отправлен на модерацию! Спасибо за вклад.")
+            if new_title and new_company and new_correct_answer:
+                add_case(new_title, new_description, new_difficulty, new_company, new_correct_answer)
+                st.success("✅ Кейс отправлен на модерацию!")
                 time.sleep(1)
                 st.rerun()
             else:
-                st.warning("Заполните хотя бы название и компанию.")
+                st.warning("Заполните хотя бы название, компанию и эталонный ответ.")
 
-# --- ВКЛАДКА 3: МОДЕРАЦИЯ (ТОЛЬКО ДЛЯ АДМИНА) ---
 if tab3:
     with tab3:
         st.subheader("Кейсы на модерации")
@@ -190,6 +185,7 @@ if tab3:
                     st.markdown(f"### {p_case['title']}")
                     st.caption(f"Компания: {p_case['company']} | Сложность: {p_case['difficulty']}")
                     st.write(p_case['description'])
+                    st.info(f"Эталонный ответ: {p_case['correct_answer']}")
                     
                     col1, col2 = st.columns(2)
                     with col1:
@@ -202,17 +198,17 @@ if tab3:
                             st.rerun()
                     st.divider()
         else:
-            st.info("Нет новых кейсов на модерации. Отдыхай!")
+            st.info("Нет новых кейсов на модерации.")
 
 # ==========================================
-# БЛОК РЕШЕНИЯ КЕЙСА И АНТИПЛАГИАТ
+# РЕШЕНИЕ КЕЙСА И АНТИПЛАГИАТ
 # ==========================================
 if 'current_case' in st.session_state:
     case = st.session_state['current_case']
     st.divider()
     st.subheader(f"Решение кейса: {case['title']}")
     
-    student_answer = st.text_area("Напиши свой ответ (решение проблемы):", height=150, key="student_answer_area")
+    student_answer = st.text_area("Напиши свой ответ:", height=150, key="student_answer_area")
     
     if st.button("Отправить на проверку ИИ"):
         if student_answer:
@@ -220,84 +216,58 @@ if 'current_case' in st.session_state:
             chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
             
             with st.spinner("Нейросеть анализирует ответ..."):
-                # ЖЕСТКИЙ ПРОМПТ
                 prompt = f"""
-                Ты — экзаменатор. Оцени ответ студента.
+                Ты — опытный преподаватель. Твоя задача — оценить ответ студента.
                 
-                Вопрос (кейс): {case['description']}
-                Ответ студента: {student_answer}
+                ВАЖНО: НЕ СТАВЬ ДИАГНОЗ САМ. У тебя есть ЭТАЛОННЫЙ ОТВЕТ.
+                
+                Кейс: "{case['description']}"
+                ЭТАЛОННЫЙ ОТВЕТ (Правильный диагноз): "{case['correct_answer']}"
+                Ответ студента: "{student_answer}"
                 
                 Твоя задача:
-                1. Поставь оценку от 1 до 10.
-                2. Напиши короткий фидбек (2 предложения).
-                3. Скажи, писал ли это искусственный интеллект (да или нет).
+                1. Сравни ответ студента с эталонным.
+                2. Оцени по шкале от 1 до 10 (10 — полностью совпало, 1 — полный бред).
+                3. Напиши фидбек (2-3 предложения): угадал ли студент диагноз, и что упустил.
+                4. Определи, похож ли текст на ИИ (напиши YES или NO).
                 
-                ВАЖНО: Ты должен ответить СТРОГО в таком формате, без приветствий и лишних слов:
-                ОЦЕНКА: [число]
-                ФИДБЕК: [твой текст]
-                ИИ: [ДА или НЕТ]
+                ВАЖНО: Выведи ответ СТРОГО по шаблону:
+                Оценка: [число]/10
+                Фидбек: [твой текст]
+                AI_SUSPECT: [YES или NO]
                 """
                 
                 url = "https://api.groq.com/openai/v1/chat/completions"
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                payload = {
-                    "model": "openai/gpt-oss-20b",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 250,
-                    "temperature": 0.1
-                }
+                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0.2}
                 
                 try:
                     response = requests.post(url, headers=headers, json=payload)
                     response.raise_for_status()
                     response_text = response.json()['choices'][0]['message']['content']
                     
-                    # Если нейросеть вернула пустоту (такое бывает)
-                    if not response_text.strip():
-                        st.error("⚠️ Нейросеть вернула пустой ответ. Попробуйте еще раз.")
-                        st.stop()
+                    score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
+                    score = score_match.group(1) if score_match else "?"
+
+                    feedback_match = re.search(r'Фидбек:\s*(.*?)(?=AI_SUSPECT|$)', response_text, re.IGNORECASE | re.DOTALL)
+                    feedback = feedback_match.group(1).strip() if feedback_match else "Не удалось распознать."
+
+                    ai_suspect = "YES" if "AI_SUSPECT: YES" in response_text.upper().replace(" ", "") else "NO"
                     
-                    # Дебаг: выводим сырой ответ в консоль (чтобы видеть, что она пишет)
-                    print("СЫРОЙ ОТВЕТ ИИ:", response_text)
-                    
-                    # ПАРСИНГ (ищем слова ОЦЕНКА и ФИДБЕК)
-                    score = "?"
-                    feedback = "Не удалось распознать."
-                    ai_suspect = "НЕТ"
-                    
-                    # Ищем оценку (любую цифру после слова ОЦЕНКА)
-                    score_match = re.search(r'ОЦЕНКА:\s*(\d+)', response_text, re.IGNORECASE)
-                    if score_match:
-                        score = score_match.group(1)
-                        
-                    # Ищем фидбек (текст после слова ФИДБЕК)
-                    feedback_match = re.search(r'ФИДБЕК:\s*(.*?)(?=ИИ:|$)', response_text, re.IGNORECASE | re.DOTALL)
-                    if feedback_match:
-                        feedback = feedback_match.group(1).strip()
-                        
-                    # Ищем проверку на ИИ
-                    if "ИИ: ДА" in response_text.upper():
-                        ai_suspect = "YES"
-                    
-                    # Если оценку не нашли — выводим сырой ответ для отладки
                     if score == "?":
-                        st.error("⚠️ Нейросеть ответила не по формату. Вот что она написала:")
+                        st.error("⚠️ Нейросеть ответила не по формату. Попробуйте еще раз.")
                         st.code(response_text)
                         st.stop()
 
                     st.success(f"Оценка: {score}/10")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
-                    # ЛОГИКА МЕТА-АНАЛИЗА
-                    if ai_suspect == "YES":
-                        if chars_per_minute > 500:
-                            st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость: {int(chars_per_minute)} симв/мин).")
-                        else:
-                            st.success("✅ Вердикт антиплагиата: Чисто.")
+                    if ai_suspect == "YES" and chars_per_minute > 500:
+                        st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
                     else:
                         st.success("✅ Вердикт антиплагиата: Чисто.")
                         
                 except Exception as e:
-                    st.error(f"Ошибка при обращении к нейросети: {str(e)}")
+                    st.error(f"Ошибка: {str(e)}")
         else:
-            st.warning("Напиши хоть что-нибудь!")
+            st.warning("Напиши ответ!")
