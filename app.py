@@ -15,7 +15,6 @@ except Exception as e:
     st.error("⚠️ Ошибка: Не настроены секреты GROQ_API_KEY или ADMIN_PASSWORD.")
     st.stop()
 
-# СТРОКА ПОДКЛЮЧЕНИЯ К SUPABASE
 DB_URI = "postgresql://postgres.dnmxpwggsbyrgqsegmcm:zqE-J4a-3hh-FwL@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
 
 # ==========================================
@@ -35,36 +34,45 @@ def init_db():
             difficulty TEXT,
             company TEXT,
             status TEXT DEFAULT 'pending',
-            correct_answer TEXT
+            correct_answer TEXT,
+            category TEXT
         )
     ''')
+    # Миграция, если база была создана ранее без колонки category
+    try:
+        cursor.execute("ALTER TABLE cases ADD COLUMN category TEXT")
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback() # Откатываем транзакцию, если колонка уже есть
     conn.commit()
     conn.close()
 
 init_db()
 
-def get_approved_cases():
+def get_approved_cases(category_filter=None):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer FROM cases WHERE status = 'approved'")
+    if category_filter:
+        cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category FROM cases WHERE status = 'approved' AND category = %s", (category_filter,))
+    else:
+        cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category FROM cases WHERE status = 'approved'")
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5]} for r in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5], "category": r[6]} for r in rows]
 
 def get_pending_cases():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer FROM cases WHERE status = 'pending'")
+    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5]} for r in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5], "category": r[6]} for r in rows]
 
-def add_case(title, description, difficulty, company, correct_answer):
+def add_case(title, description, difficulty, company, correct_answer, category):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status, correct_answer) VALUES (%s, %s, %s, %s, 'pending', %s)",
-        (title, description, difficulty, company, correct_answer)
+        "INSERT INTO cases (title, description, difficulty, company, status, correct_answer, category) VALUES (%s, %s, %s, %s, 'pending', %s, %s)",
+        (title, description, difficulty, company, correct_answer, category)
     )
     conn.commit()
     conn.close()
@@ -84,97 +92,123 @@ def delete_case(case_id):
     conn.close()
 
 # ==========================================
-# JS-ЗАЩИТА ОТ ВСТАВКИ
-# ==========================================
-js_block_paste = """
-<script>
-    setTimeout(function() {
-        const textareas = window.parent.document.querySelectorAll('textarea');
-        textareas.forEach(ta => {
-            ta.addEventListener('paste', function(e) {
-                e.preventDefault();
-                alert('Вставка текста запрещена! Пожалуйста, введите ответ вручную.');
-            });
-            ta.addEventListener('contextmenu', function(e) { e.preventDefault(); });
-        });
-    }, 1000);
-</script>
-"""
-st.markdown(js_block_paste, unsafe_allow_html=True)
-
-# ==========================================
-# АВТОРИЗАЦИЯ
+# АВТОРИЗАЦИЯ И РОЛИ
 # ==========================================
 st.sidebar.title("Управление")
+st.sidebar.caption("Введите пароль для доступа к админ-панели.")
 admin_pass_input = st.sidebar.text_input("Пароль администратора", type="password")
 
 is_admin = False
-if admin_pass_input:
-    if admin_pass_input == ADMIN_PASSWORD:
-        is_admin = True
-        st.sidebar.success("✅ Вы вошли как Администратор")
-    else:
-        st.sidebar.error("❌ Неверный пароль")
+if admin_pass_input == ADMIN_PASSWORD:
+    is_admin = True
+    st.sidebar.success("✅ Вы вошли как Администратор")
+
+# Выбор роли (если не админ)
+if 'user_role' not in st.session_state:
+    st.session_state['user_role'] = None
+
+if not is_admin and st.session_state['user_role'] is None:
+    st.title("🩺 Добро пожаловать на МедПлатформу!")
+    st.write("Пожалуйста, выберите, кто вы:")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🎓 Я Студент", use_container_width=True):
+            st.session_state['user_role'] = 'student'
+            st.rerun()
+    with col2:
+        if st.button("🏢 Я Компания", use_container_width=True):
+            st.session_state['user_role'] = 'company'
+            st.rerun()
+    st.stop() # Останавливаем дальнейшую загрузку, пока не выберут роль
 
 # ==========================================
-# ИНТЕРФЕЙС
+# ОСНОВНОЙ ИНТЕРФЕЙС
 # ==========================================
 st.set_page_config(page_title="МедПлатформа", page_icon="🩺")
 st.title("🩺 Платформа для студентов-медиков")
 
 if is_admin:
-    tab1, tab2, tab3 = st.tabs(["📚 Список кейсов", "➕ Предложить кейс", "🛡️ Модерация"])
+    st.info("Режим Администратора: доступны все функции.")
+    role = 'admin'
+elif st.session_state['user_role'] == 'student':
+    st.info("Вы вошли как Студент. Выберите кейс и проверьте свои силы.")
+    role = 'student'
 else:
-    tab1, tab2 = st.tabs(["📚 Список кейсов", "➕ Предложить кейс"])
-    tab3 = None
+    st.info("Вы вошли как Компания. Здесь вы можете предложить кейс и посмотреть уровень студентов.")
+    role = 'company'
 
+# ==========================================
+# ВКЛАДКИ В ЗАВИСИМОСТИ ОТ РОЛИ
+# ==========================================
+if role == 'student':
+    tab1 = st.tabs(["📚 Решение кейсов"])
+    tab2 = None
+    tab3 = None
+elif role == 'company':
+    tab1, tab2 = st.tabs(["📚 База кейсов", "➕ Предложить кейс"])
+    tab3 = None
+elif role == 'admin':
+    tab1, tab2, tab3 = st.tabs(["📚 Список кейсов", "➕ Предложить кейс", "🛡️ Модерация"])
+    tab3 = tab3
+
+# --- ВКЛАДКА 1: СПИСОК КЕЙСОВ (ДЛЯ ВСЕХ) ---
 with tab1:
-    st.subheader("Доступные кейсы")
-    cases = get_approved_cases()
+    if role == 'student':
+        st.subheader("Выбери направление:")
+        category_filter = st.radio("Фильтр по типу:", ["Все", "НИИ", "Больницы", "Фарм-маркетинг"], horizontal=True)
+        cat_db = None if category_filter == "Все" else category_filter
+        cases = get_approved_cases(cat_db)
+    else:
+        st.subheader("Опубликованные кейсы")
+        cases = get_approved_cases()
+
     if cases:
         for case in cases:
             with st.container():
                 st.markdown(f"### {case['title']}")
-                st.caption(f"Сложность: {case['difficulty']} | Компания: {case['company']}")
+                st.caption(f"🏷️ {case['category']} | Сложность: {case['difficulty']} | Компания: {case['company']}")
                 st.write(f"*{case['description']}*")
                 
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if st.button(f"Решить #{case['id']}", key=f"btn_{case['id']}"):
+                if role in ['student', 'admin']:
+                    if st.button(f"Решить кейс #{case['id']}", key=f"btn_{case['id']}"):
                         st.session_state['current_case'] = case
                         st.session_state['start_time'] = time.time()
                 
-                if is_admin:
-                    with col2:
-                        if st.button(f"❌ Удалить #{case['id']}", key=f"del_approved_{case['id']}"):
-                            delete_case(case['id'])
-                            st.rerun()
+                if role == 'admin':
+                    if st.button(f"❌ Удалить #{case['id']}", key=f"del_approved_{case['id']}"):
+                        delete_case(case['id'])
+                        st.rerun()
                 st.divider()
     else:
-        st.info("Пока нет доступных кейсов.")
+        st.info("Пока нет доступных кейсов в этой категории.")
 
-with tab2:
-    st.subheader("Предложить новый кейс")
-    st.info("💡 Ваш кейс будет опубликован на платформе только после проверки администратором.")
-    
-    with st.form("add_case_form"):
-        new_title = st.text_input("Название кейса")
-        new_company = st.text_input("Компания")
-        new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
-        new_description = st.text_area("Описание задачи (симптомы)")
-        new_correct_answer = st.text_area("Эталонный ответ (правильный диагноз)") # НОВОЕ ПОЛЕ
+# --- ВКЛАДКА 2: ПРЕДЛОЖИТЬ КЕЙС (ДЛЯ КОМПАНИЙ И АДМИНА) ---
+if tab2:
+    with tab2:
+        st.subheader("Предложить новый кейс")
+        st.info("💡 Ваш кейс будет опубликован на платформе только после проверки администратором.")
         
-        submit_button = st.form_submit_button("Отправить на модерацию")
-        
-        if submit_button:
-            if new_title and new_company and new_correct_answer:
-                add_case(new_title, new_description, new_difficulty, new_company, new_correct_answer)
-                st.success("✅ Кейс отправлен на модерацию!")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.warning("Заполните хотя бы название, компанию и эталонный ответ.")
+        with st.form("add_case_form"):
+            new_title = st.text_input("Название кейса")
+            new_company = st.text_input("Название компании")
+            new_category = st.selectbox("Направление", ["НИИ", "Больницы", "Фарм-маркетинг"])
+            new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
+            new_description = st.text_area("Описание задачи (симптомы/условия)")
+            new_correct_answer = st.text_area("Эталонный ответ (правильный диагноз/решение)")
+            
+            submit_button = st.form_submit_button("Отправить на модерацию")
+            
+            if submit_button:
+                if new_title and new_company and new_correct_answer:
+                    add_case(new_title, new_description, new_difficulty, new_company, new_correct_answer, new_category)
+                    st.success("✅ Кейс отправлен на модерацию!")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("Заполните все обязательные поля.")
 
+# --- ВКЛАДКА 3: МОДЕРАЦИЯ (ТОЛЬКО ДЛЯ АДМИНА) ---
 if tab3:
     with tab3:
         st.subheader("Кейсы на модерации")
@@ -183,7 +217,7 @@ if tab3:
             for p_case in pending:
                 with st.container():
                     st.markdown(f"### {p_case['title']}")
-                    st.caption(f"Компания: {p_case['company']} | Сложность: {p_case['difficulty']}")
+                    st.caption(f"🏷️ {p_case['category']} | Компания: {p_case['company']}")
                     st.write(p_case['description'])
                     st.info(f"Эталонный ответ: {p_case['correct_answer']}")
                     
@@ -198,15 +232,16 @@ if tab3:
                             st.rerun()
                     st.divider()
         else:
-            st.info("Нет новых кейсов на модерации.")
+            st.info("Нет новых кейсов на модерации. Отдыхай!")
 
 # ==========================================
-# РЕШЕНИЕ КЕЙСА И АНТИПЛАГИАТ
+# РЕШЕНИЕ КЕЙСА И АНТИПЛАГИАТ (ДЛЯ СТУДЕНТОВ И АДМИНА)
 # ==========================================
 if 'current_case' in st.session_state:
     case = st.session_state['current_case']
     st.divider()
     st.subheader(f"Решение кейса: {case['title']}")
+    st.caption(f"🏷️ Категория: {case['category']}")
     
     student_answer = st.text_area("Напиши свой ответ:", height=150, key="student_answer_area")
     
@@ -216,24 +251,27 @@ if 'current_case' in st.session_state:
             chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
             
             with st.spinner("Нейросеть анализирует ответ..."):
+                # ДИНАМИЧЕСКИЙ ПРОМПТ В ЗАВИСИМОСТИ ОТ КАТЕГОРИИ
+                if case['category'] == 'НИИ':
+                    persona = "Ты — строгий научный рецензент в НИИ. Оцени, соблюдены ли принципы доказательной медицины, есть ли логические ошибки в выводах."
+                elif case['category'] == 'Фарм-маркетинг':
+                    persona = "Ты — коммерческий директор фарм-компании. Оцени ответ с точки зрения ROI, маржинальности, реалистичности бизнес-плана и знания рынка."
+                else: # Больницы
+                    persona = "Ты — заведующий отделением больницы. Оцени, провел ли студент дифференциальную диагностику, назначил ли правильные анализы и не навредил ли пациенту."
+
                 prompt = f"""
-                Ты — строгий, но справедливый преподаватель.
+                {persona}
                 
                 Кейс: "{case['description']}"
-                ЭТАЛОННЫЙ ОТВЕТ (Правильный диагноз): "{case['correct_answer']}"
+                ЭТАЛОННЫЙ ОТВЕТ: "{case['correct_answer']}"
                 Ответ студента: "{student_answer}"
                 
                 Твоя задача: Оценить ответ студента по 100-балльной шкале, строго следуя критериям:
+                1. (60 баллов) Правильно ли определена суть (диагноз/решение)?
+                2. (20 баллов) Есть ли обоснование?
+                3. (20 баллов) Упомянуты ли правильные методы/инструменты?
                 
-                КРИТЕРИИ ОЦЕНКИ (максимум 100 баллов):
-                1. (60 баллов) Правильно ли определен основной диагноз? (Если диагноз верный — 60 баллов. Если близко, но неточно — 30-40. Если мимо — 0).
-                2. (20 баллов) Есть ли обоснование? (Студент объяснил, почему он так думает, или просто написал пару слов?).
-                3. (20 баллов) Упомянуты ли правильные методы диагностики/лечения? (УЗИ, анализы и т.д.).
-                
-                ВАЖНО: 
-                - Сложи баллы и выведи ИТОГОВУЮ оценку.
-                - Ответ должен быть СТРОГО по шаблону:
-                
+                ВАЖНО: Выведи ответ СТРОГО по шаблону:
                 Оценка: [число от 1 до 100]/100
                 Фидбек: [твой текст (2-3 предложения)]
                 AI_SUSPECT: [YES или NO]
@@ -241,20 +279,12 @@ if 'current_case' in st.session_state:
                 
                 url = "https://api.groq.com/openai/v1/chat/completions"
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.1}
+                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0.1}
                 
                 try:
-                    # Добавляем таймаут 15 секунд (чтобы не висло вечно)
                     response = requests.post(url, headers=headers, json=payload, timeout=15)
                     response.raise_for_status()
-                    
-                    response_data = response.json()
-                    response_text = response_data['choices'][0]['message']['content']
-                    
-                    # Проверка, что ответ не пустой и не обрезанный
-                    if not response_text or len(response_text) < 10:
-                        st.error("⚠️ Соединение прервалось. Нейросеть не успела ответить. Попробуйте еще раз.")
-                        st.stop()
+                    response_text = response.json()['choices'][0]['message']['content']
                     
                     score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
                     score = score_match.group(1) if score_match else "?"
@@ -272,20 +302,14 @@ if 'current_case' in st.session_state:
                     st.success(f"Оценка: {score}/100")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
-                    # ЛОГИКА МЕТА-АНАЛИЗА
-                    if ai_suspect == "YES":
-                        if chars_per_minute > 500:
-                            st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
-                        elif chars_per_minute < 300:
-                            st.success("✅ Вердикт антиплагиата: Чисто.")
-                            if is_admin:
-                                st.sidebar.warning(f"⚠️ Скрытый флаг: Кейс {case['id']}. ИИ подозревает, но скорость {int(chars_per_minute)} симв/мин.")
+                    if ai_suspect == "YES" and chars_per_minute > 500:
+                        st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
                     else:
                         st.success("✅ Вердикт антиплагиата: Чисто.")
                         
                 except requests.exceptions.Timeout:
-                    st.error("⚠️ Таймаут. Нейросеть слишком долго думает (возможно, плохой интернет). Попробуйте еще раз.")
-                except requests.exceptions.RequestException as e:
-                    st.error(f"⚠️ Ошибка сети: {str(e)}. Проверьте интернет и попробуйте снова.")
+                    st.error("⚠️ Таймаут. Нейросеть слишком долго думает. Попробуйте еще раз.")
                 except Exception as e:
                     st.error(f"Ошибка: {str(e)}")
+        else:
+            st.warning("Напиши ответ!")
