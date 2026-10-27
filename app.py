@@ -278,26 +278,37 @@ if 'current_case' in st.session_state:
                 
                 url = "https://api.groq.com/openai/v1/chat/completions"
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0.1}
+                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.1}
                 
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=15)
-                    response.raise_for_status()
-                    response_text = response.json()['choices'][0]['message']['content']
-                    
-                    score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
-                    score = score_match.group(1) if score_match else "?"
+                    # Делаем до 2-х попыток, если ИИ отвечает не по формату
+                    max_retries = 2
+                    for attempt in range(max_retries):
+                        response = requests.post(url, headers=headers, json=payload, timeout=15)
+                        response.raise_for_status()
+                        response_text = response.json()['choices'][0]['message']['content']
+                        
+                        score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
+                        score = score_match.group(1) if score_match else None
+
+                        if score is not None:
+                            break # Если нашли оценку — выходим из цикла, всё ок
+                        
+                        # Если оценки нет, значит формат сломался. Пробуем еще раз с другим промптом
+                        if attempt < max_retries - 1:
+                            # Добавляем в промпт просьбу исправиться
+                            payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Твой предыдущий ответ был не по формату. Строго соблюдай шаблон: Оценка: [число]/100 \n Фидбек: [текст] \n AI_SUSPECT: [YES/NO]"
+
+                    if score is None:
+                        st.error("⚠️ Нейросеть трижды не смогла ответить по формату. Попробуйте переформулировать ответ.")
+                        st.code(response_text)
+                        st.stop()
 
                     feedback_match = re.search(r'Фидбек:\s*(.*?)(?=AI_SUSPECT|$)', response_text, re.IGNORECASE | re.DOTALL)
                     feedback = feedback_match.group(1).strip() if feedback_match else "Не удалось распознать."
 
                     ai_suspect = "YES" if "AI_SUSPECT: YES" in response_text.upper().replace(" ", "") else "NO"
                     
-                    if score == "?":
-                        st.error("⚠️ Нейросеть ответила не по формату. Попробуйте еще раз.")
-                        st.code(response_text)
-                        st.stop()
-
                     st.success(f"Оценка: {score}/100")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
@@ -310,5 +321,3 @@ if 'current_case' in st.session_state:
                     st.error("⚠️ Таймаут. Нейросеть слишком долго думает. Попробуйте еще раз.")
                 except Exception as e:
                     st.error(f"Ошибка: {str(e)}")
-        else:
-            st.warning("Напиши ответ!")
