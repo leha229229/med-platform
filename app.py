@@ -242,9 +242,17 @@ if 'current_case' in st.session_state:
                 payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0.2}
                 
                 try:
-                    response = requests.post(url, headers=headers, json=payload)
+                    # Добавляем таймаут 15 секунд (чтобы не висло вечно)
+                    response = requests.post(url, headers=headers, json=payload, timeout=15)
                     response.raise_for_status()
-                    response_text = response.json()['choices'][0]['message']['content']
+                    
+                    response_data = response.json()
+                    response_text = response_data['choices'][0]['message']['content']
+                    
+                    # Проверка, что ответ не пустой и не обрезанный
+                    if not response_text or len(response_text) < 10:
+                        st.error("⚠️ Соединение прервалось. Нейросеть не успела ответить. Попробуйте еще раз.")
+                        st.stop()
                     
                     score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
                     score = score_match.group(1) if score_match else "?"
@@ -262,12 +270,20 @@ if 'current_case' in st.session_state:
                     st.success(f"Оценка: {score}/10")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
-                    if ai_suspect == "YES" and chars_per_minute > 500:
-                        st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
+                    # ЛОГИКА МЕТА-АНАЛИЗА
+                    if ai_suspect == "YES":
+                        if chars_per_minute > 500:
+                            st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
+                        elif chars_per_minute < 300:
+                            st.success("✅ Вердикт антиплагиата: Чисто.")
+                            if is_admin:
+                                st.sidebar.warning(f"⚠️ Скрытый флаг: Кейс {case['id']}. ИИ подозревает, но скорость {int(chars_per_minute)} симв/мин.")
                     else:
                         st.success("✅ Вердикт антиплагиата: Чисто.")
                         
+                except requests.exceptions.Timeout:
+                    st.error("⚠️ Таймаут. Нейросеть слишком долго думает (возможно, плохой интернет). Попробуйте еще раз.")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"⚠️ Ошибка сети: {str(e)}. Проверьте интернет и попробуйте снова.")
                 except Exception as e:
                     st.error(f"Ошибка: {str(e)}")
-        else:
-            st.warning("Напиши ответ!")
