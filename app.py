@@ -82,7 +82,7 @@ def delete_case(case_id):
     conn.close()
 
 # ==========================================
-# JS-ЗАЩИТА ОТ ВСТАВКИ
+# JS-ЗАЩИТА ОТ ВСТАВКИ И ПКМ
 # ==========================================
 js_block_paste = """
 <script>
@@ -141,9 +141,18 @@ with tab1:
                 st.caption(f"Сложность: {case['difficulty']} | Компания: {case['company']}")
                 st.write(f"*{case['description']}*")
                 
-                if st.button(f"Решить кейс #{case['id']}", key=f"btn_{case['id']}"):
-                    st.session_state['current_case'] = case
-                    st.session_state['start_time'] = time.time()
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    if st.button(f"Решить #{case['id']}", key=f"btn_{case['id']}"):
+                        st.session_state['current_case'] = case
+                        st.session_state['start_time'] = time.time()
+                
+                # Если админ, показываем кнопку удаления прямо в списке
+                if is_admin:
+                    with col2:
+                        if st.button(f"❌ Удалить #{case['id']}", key=f"del_approved_{case['id']}"):
+                            delete_case(case['id'])
+                            st.rerun()
                 st.divider()
     else:
         st.info("Пока нет доступных кейсов.")
@@ -257,6 +266,7 @@ if 'current_case' in st.session_state:
                     st.success(f"Оценка: {score}/10")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
+                    # ЛОГИКА МЕТА-АНАЛИЗА
                     if ai_suspect == "YES":
                         if chars_per_minute > 500:
                             st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин). Пожалуйста, перепишите ответ своими словами.")
@@ -273,4 +283,3 @@ if 'current_case' in st.session_state:
                     st.error(f"Ошибка нейросети: {str(e)}")
         else:
             st.warning("Напиши хоть что-нибудь!")
-# update
