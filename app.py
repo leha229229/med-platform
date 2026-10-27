@@ -239,7 +239,7 @@ if 'current_case' in st.session_state:
                 
                 url = "https://api.groq.com/openai/v1/chat/completions"
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0.2}
+                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.2}
                 
                 try:
                     # Добавляем таймаут 15 секунд (чтобы не висло вечно)
