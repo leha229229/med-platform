@@ -220,21 +220,22 @@ if 'current_case' in st.session_state:
             chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
             
             with st.spinner("Нейросеть анализирует ответ..."):
+                # ЖЕСТКИЙ ПРОМПТ
                 prompt = f"""
-                Ты — опытный преподаватель и строгий антиплагиатчик.
+                Ты — экзаменатор. Оцени ответ студента.
                 
-                Кейс: "{case['description']}"
-                Ответ студента: "{student_answer}"
+                Вопрос (кейс): {case['description']}
+                Ответ студента: {student_answer}
                 
                 Твоя задача:
-                1. Оцени ответ по шкале от 1 до 10. Будь строгим.
-                2. Напиши фидбек (2-3 предложения).
-                3. Определи, похож ли текст на ИИ.
+                1. Поставь оценку от 1 до 10.
+                2. Напиши короткий фидбек (2 предложения).
+                3. Скажи, писал ли это искусственный интеллект (да или нет).
                 
-                ВАЖНО: Выведи ответ СТРОГО по шаблону:
-                Оценка: [число]/10
-                Фидбек: [твой текст]
-                AI_SUSPECT: [YES или NO]
+                ВАЖНО: Ты должен ответить СТРОГО в таком формате, без приветствий и лишних слов:
+                ОЦЕНКА: [число]
+                ФИДБЕК: [твой текст]
+                ИИ: [ДА или НЕТ]
                 """
                 
                 url = "https://api.groq.com/openai/v1/chat/completions"
@@ -242,8 +243,8 @@ if 'current_case' in st.session_state:
                 payload = {
                     "model": "openai/gpt-oss-20b",
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 300,
-                    "temperature": 0.2
+                    "max_tokens": 250,
+                    "temperature": 0.1
                 }
                 
                 try:
@@ -251,19 +252,36 @@ if 'current_case' in st.session_state:
                     response.raise_for_status()
                     response_text = response.json()['choices'][0]['message']['content']
                     
-                    # Ищем оценку
-                    score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
-                    score = score_match.group(1) if score_match else "?"
-
-                    # Ищем фидбек
-                    feedback_match = re.search(r'Фидбек:\s*(.*?)(?=AI_SUSPECT|$)', response_text, re.IGNORECASE | re.DOTALL)
-                    feedback = feedback_match.group(1).strip() if feedback_match else "Не удалось распознать фидбек."
-
-                    # Ищем метку ИИ
-                    ai_suspect = "YES" if "AI_SUSPECT: YES" in response_text.upper().replace(" ", "") else "NO"
+                    # Если нейросеть вернула пустоту (такое бывает)
+                    if not response_text.strip():
+                        st.error("⚠️ Нейросеть вернула пустой ответ. Попробуйте еще раз.")
+                        st.stop()
                     
+                    # Дебаг: выводим сырой ответ в консоль (чтобы видеть, что она пишет)
+                    print("СЫРОЙ ОТВЕТ ИИ:", response_text)
+                    
+                    # ПАРСИНГ (ищем слова ОЦЕНКА и ФИДБЕК)
+                    score = "?"
+                    feedback = "Не удалось распознать."
+                    ai_suspect = "НЕТ"
+                    
+                    # Ищем оценку (любую цифру после слова ОЦЕНКА)
+                    score_match = re.search(r'ОЦЕНКА:\s*(\d+)', response_text, re.IGNORECASE)
+                    if score_match:
+                        score = score_match.group(1)
+                        
+                    # Ищем фидбек (текст после слова ФИДБЕК)
+                    feedback_match = re.search(r'ФИДБЕК:\s*(.*?)(?=ИИ:|$)', response_text, re.IGNORECASE | re.DOTALL)
+                    if feedback_match:
+                        feedback = feedback_match.group(1).strip()
+                        
+                    # Ищем проверку на ИИ
+                    if "ИИ: ДА" in response_text.upper():
+                        ai_suspect = "YES"
+                    
+                    # Если оценку не нашли — выводим сырой ответ для отладки
                     if score == "?":
-                        st.error("⚠️ Нейросеть ответила в странном формате. Попробуйте еще раз.")
+                        st.error("⚠️ Нейросеть ответила не по формату. Вот что она написала:")
                         st.code(response_text)
                         st.stop()
 
@@ -273,17 +291,13 @@ if 'current_case' in st.session_state:
                     # ЛОГИКА МЕТА-АНАЛИЗА
                     if ai_suspect == "YES":
                         if chars_per_minute > 500:
-                            st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
-                        elif chars_per_minute < 300:
+                            st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость: {int(chars_per_minute)} симв/мин).")
+                        else:
                             st.success("✅ Вердикт антиплагиата: Чисто.")
-                            if is_admin:
-                                st.sidebar.warning(f"⚠️ Скрытый флаг: Кейс {case['id']}. ИИ подозревает, но скорость {int(chars_per_minute)} симв/мин.")
-                            else:
-                                print(f"[ADMIN LOG] Кейс {case['id']}: ИИ подозревает, но скорость {int(chars_per_minute)} симв/мин.")
                     else:
                         st.success("✅ Вердикт антиплагиата: Чисто.")
                         
                 except Exception as e:
-                    st.error(f"Ошибка нейросети: {str(e)}")
+                    st.error(f"Ошибка при обращении к нейросети: {str(e)}")
         else:
             st.warning("Напиши хоть что-нибудь!")
