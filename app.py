@@ -221,7 +221,7 @@ if 'current_case' in st.session_state and st.session_state.get('show_answer', Fa
             time_spent = time.time() - st.session_state.get('start_time', time.time())
             chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
             
-            with st.spinner("Нейросеть анализирует ответ..."):
+                       with st.spinner("Нейросеть анализирует ответ..."):
                 prompt = f"""
                 Ты — опытный преподаватель и строгий антиплагиатчик.
                 
@@ -229,12 +229,14 @@ if 'current_case' in st.session_state and st.session_state.get('show_answer', Fa
                 Ответ студента: "{student_answer}"
                 
                 Твоя задача:
-                1. Оцени ответ по шкале от 1 до 10. Будь строгим.
-                2. Напиши фидбек (2-3 предложения): что сделано хорошо, а что упущено.
-                3. Определи, похож ли текст на ИИ (ai_suspect: YES или NO).
+                1. Оцени ответ по шкале от 1 до 10.
+                2. Напиши фидбек (2-3 предложения).
+                3. Определи, похож ли текст на ИИ (напиши YES или NO).
                 
-                ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов, только фигурные скобки.
-                Пример: {{"score": 8, "feedback": "Хороший ответ, но забыли про УЗИ.", "ai_suspect": "NO"}}
+                ВАЖНО: Выведи ответ СТРОГО по шаблону:
+                Оценка: [число]/10
+                Фидбек: [твой текст]
+                AI_SUSPECT: [YES или NO]
                 """
                 
                 url = "https://api.groq.com/openai/v1/chat/completions"
@@ -242,8 +244,8 @@ if 'current_case' in st.session_state and st.session_state.get('show_answer', Fa
                 payload = {
                     "model": "openai/gpt-oss-20b",
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 400,
-                    "temperature": 0.1
+                    "max_tokens": 300,
+                    "temperature": 0.2
                 }
                 
                 try:
@@ -251,19 +253,25 @@ if 'current_case' in st.session_state and st.session_state.get('show_answer', Fa
                     response.raise_for_status()
                     response_text = response.json()['choices'][0]['message']['content']
                     
-                    # Надежный парсинг JSON
-                    clean_text = response_text.strip().replace("```json", "").replace("```", "").strip()
-                    start_idx = clean_text.find('{')
-                    end_idx = clean_text.rfind('}')
-                    if start_idx != -1 and end_idx != -1:
-                        clean_text = clean_text[start_idx:end_idx+1]
-                        
-                    data = json.loads(clean_text)
+                    import re # Импортируем регулярки для надежного поиска
                     
-                    score = data.get("score", "Ошибка")
-                    feedback = data.get("feedback", "Не удалось получить фидбек")
-                    ai_suspect = data.get("ai_suspect", "NO").upper()
-                        
+                    # Ищем оценку (любое число от 1 до 10)
+                    score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
+                    score = score_match.group(1) if score_match else "?"
+
+                    # Ищем фидбек (текст от слова "Фидбек:" до конца строки или до AI_SUSPECT)
+                    feedback_match = re.search(r'Фидбек:\s*(.*?)(?=AI_SUSPECT|$)', response_text, re.IGNORECASE | re.DOTALL)
+                    feedback = feedback_match.group(1).strip() if feedback_match else "Не удалось распознать фидбек."
+
+                    # Ищем метку ИИ
+                    ai_suspect = "YES" if "AI_SUSPECT: YES" in response_text.upper().replace(" ", "") else "NO"
+                    
+                    # Если регулярки вообще ничего не нашли, значит нейросеть выдала полный бред
+                    if score == "?":
+                        st.error("⚠️ Нейросеть ответила в странном формате. Попробуйте еще раз.")
+                        st.code(response_text) # Показываем сырой ответ для отладки
+                        st.stop()
+
                     st.success(f"Оценка: {score}/10")
                     st.info(f"Фидбек от ИИ: {feedback}")
                     
@@ -280,9 +288,5 @@ if 'current_case' in st.session_state and st.session_state.get('show_answer', Fa
                     else:
                         st.success("✅ Вердикт антиплагиата: Чисто.")
                         
-                except json.JSONDecodeError:
-                    st.error("⚠️ Ошибка: Нейросеть выдала ответ в неверном формате. Попробуйте еще раз.")
                 except Exception as e:
                     st.error(f"Ошибка нейросети: {str(e)}")
-        else:
-            st.warning("Напиши хоть что-нибудь!")
