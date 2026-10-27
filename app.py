@@ -82,7 +82,7 @@ def delete_case(case_id):
     conn.close()
 
 # ==========================================
-# JS-ЗАЩИТА ОТ ВСТАВКИ И ПКМ
+# JS-ЗАЩИТА ОТ ВСТАВКИ
 # ==========================================
 js_block_paste = """
 <script>
@@ -146,8 +146,10 @@ with tab1:
                     if st.button(f"Решить #{case['id']}", key=f"btn_{case['id']}"):
                         st.session_state['current_case'] = case
                         st.session_state['start_time'] = time.time()
+                        st.session_state['show_answer'] = True
+                        st.session_state['student_answer_area'] = ""
+                        st.rerun() # Принудительное обновление
                 
-                # Если админ, показываем кнопку удаления прямо в списке
                 if is_admin:
                     with col2:
                         if st.button(f"❌ Удалить #{case['id']}", key=f"del_approved_{case['id']}"):
@@ -207,8 +209,19 @@ if tab3:
 # ==========================================
 # БЛОК РЕШЕНИЯ КЕЙСА И АНТИПЛАГИАТ
 # ==========================================
+if 'current_case' in st.session_state and st.session_state.get('show_answer', False):
+    case = st.session_state['current_case']
+    st.divider()
+    st.subheader(f"Решение кейса: {case['title']}")
+    
+    student_answer = st.text_area("Напиши свой ответ (решение проблемы):", height=150, key="student_answer_area")
+    
+    if st.button("Отправить на проверку ИИ"):
+        if student_answer:
+            time_spent = time.time() - st.session_state.get('start_time', time.time())
+            chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
+            
             with st.spinner("Нейросеть анализирует ответ..."):
-                # 1. ЖЕСТКИЙ ПРОМПТ (ТРЕБУЕМ JSON)
                 prompt = f"""
                 Ты — опытный преподаватель и строгий антиплагиатчик.
                 
@@ -218,7 +231,7 @@ if tab3:
                 Твоя задача:
                 1. Оцени ответ по шкале от 1 до 10. Будь строгим.
                 2. Напиши фидбек (2-3 предложения): что сделано хорошо, а что упущено.
-                3. Определи, похож ли текст на ИИ (AI_SUSPECT: YES или NO).
+                3. Определи, похож ли текст на ИИ (ai_suspect: YES или NO).
                 
                 ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов, только фигурные скобки.
                 Пример: {{"score": 8, "feedback": "Хороший ответ, но забыли про УЗИ.", "ai_suspect": "NO"}}
@@ -229,8 +242,8 @@ if tab3:
                 payload = {
                     "model": "openai/gpt-oss-20b",
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 300,
-                    "temperature": 0.1 # Снижаем температуру, чтобы модель не импровизировала
+                    "max_tokens": 400,
+                    "temperature": 0.1
                 }
                 
                 try:
@@ -238,11 +251,8 @@ if tab3:
                     response.raise_for_status()
                     response_text = response.json()['choices'][0]['message']['content']
                     
-                    # 2. НАДЕЖНЫЙ ПАРСИНГ JSON
-                    # Иногда ИИ оборачивает JSON в ```json ... ```, поэтому чистим текст
+                    # Надежный парсинг JSON
                     clean_text = response_text.strip().replace("```json", "").replace("```", "").strip()
-                    
-                    # Ищем первую { и последнюю }
                     start_idx = clean_text.find('{')
                     end_idx = clean_text.rfind('}')
                     if start_idx != -1 and end_idx != -1:
@@ -272,6 +282,7 @@ if tab3:
                         
                 except json.JSONDecodeError:
                     st.error("⚠️ Ошибка: Нейросеть выдала ответ в неверном формате. Попробуйте еще раз.")
-                    st.code(response_text) # Покажет сырой ответ для отладки
                 except Exception as e:
                     st.error(f"Ошибка нейросети: {str(e)}")
+        else:
+            st.warning("Напиши хоть что-нибудь!")
