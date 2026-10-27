@@ -273,3 +273,4 @@ if 'current_case' in st.session_state:
                     st.error(f"Ошибка нейросети: {str(e)}")
         else:
             st.warning("Напиши хоть что-нибудь!")
+# update
