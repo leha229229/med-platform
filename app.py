@@ -37,13 +37,15 @@ def init_db():
             status TEXT DEFAULT 'pending',
             correct_answer TEXT,
             category TEXT,
-            min_salary INTEGER DEFAULT 40000
+            min_salary INTEGER DEFAULT 40000,
+            job_title TEXT,
+            questions JSONB
         )
     ''')
     conn.commit()
     conn.close()
 
-init_db()  # <--- Вот эта строчка должна идти сразу после закрытия функции
+init_db()
 
 def get_approved_cases(category=None):
     conn = get_db_connection()
@@ -54,74 +56,26 @@ def get_approved_cases(category=None):
         cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
     rows = cursor.fetchall()
     conn.close()
-    
-    result = []
-    for r in rows:
-        d = dict(r)
-        desc = d.get('description', '')
-        
-        # Распаковываем должность и вопросы обратно
-        d['job_title'] = 'Специалист'
-        d['questions'] = None
-        
-        if "[ДОЛЖНОСТЬ:" in desc:
-            parts = desc.split("[ДОЛЖНОСТЬ: ")
-            d['description'] = parts[0].strip()
-            rest = parts[1]
-            d['job_title'] = rest.split("]")[0]
-            
-        if "[ВОПРОСЫ: " in desc:
-            q_part = desc.split("[ВОПРОСЫ: ")[1]
-            q_json_str = q_part.rsplit("]", 1)[0]
-            try:
-                d['questions'] = json.loads(q_json_str)
-            except:
-                pass
-                
-        result.append(d)
-    return result
+    return [dict(r) for r in rows]
+
 def get_pending_cases():
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("SELECT * FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    
-    result = []
-    for r in rows:
-        d = dict(r)
-        desc = d.get('description', '')
-        d['job_title'] = 'Специалист'
-        d['questions'] = None
-        
-        if "[ДОЛЖНОСТЬ:" in desc:
-            parts = desc.split("[ДОЛЖНОСТЬ: ")
-            d['description'] = parts[0].strip()
-            d['job_title'] = parts[1].split("]")[0]
-            
-        if "[ВОПРОСЫ: " in desc:
-            q_part = desc.split("[ВОПРОСЫ: ")[1]
-            q_json_str = q_part.rsplit("]", 1)[0]
-            try:
-                d['questions'] = json.loads(q_json_str)
-            except:
-                pass
-        result.append(d)
-    return result
+    return [dict(r) for r in rows]
 
 def add_case(title, description, difficulty, company, category, min_salary, job_title, questions_json):
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # Упаковываем должность и вопросы прямо в описание, чтобы не зависеть от колонок
-    full_description = f"{description}\n\n[ДОЛЖНОСТЬ: {job_title}]\n[ВОПРОСЫ: {questions_json}]"
-    
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary) VALUES (%s, %s, %s, %s, 'pending', %s, %s)",
-        (title, full_description, difficulty, company, category, min_salary)
+        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s)",
+        (title, description, difficulty, company, category, min_salary, job_title, questions_json)
     )
     conn.commit()
     conn.close()
+
 def update_case_status(case_id, new_status):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -212,19 +166,11 @@ if role == 'student':
             
             for c in cases:
                 with st.container():
-                    title = c.get('title', 'Без названия')
-                    company = c.get('company', 'Неизвестно')
-                    job_title = c.get('job_title', 'Специалист')
-                    salary = c.get('min_salary', 40000)
-                    difficulty = c.get('difficulty', 'Средний')
-                    desc = c.get('description', 'Нет описания')
-                    case_id = c.get('id')
+                    st.markdown(f"### {c.get('title', 'Без названия')}")
+                    st.caption(f"🏢 {c.get('company', 'Неизвестно')} | 💼 {c.get('job_title', 'Специалист')} | 💰 от {c.get('min_salary', 40000)} ₽ | 📊 {c.get('difficulty', 'Средний')}")
+                    st.write(c.get('description', 'Нет описания'))
                     
-                    st.markdown(f"### {title}")
-                    st.caption(f"🏢 {company} | 💼 {job_title} | 💰 от {salary} ₽ | 📊 {difficulty}")
-                    st.write(desc)
-                    
-                    if st.button(f"Пройти собеседование", key=f"start_{case_id}"):
+                    if st.button(f"Пройти собеседование", key=f"start_{c['id']}"):
                         st.session_state['interview_active'] = True
                         st.session_state['current_case'] = c
                         st.session_state['current_q_idx'] = 0
@@ -237,7 +183,7 @@ if role == 'student':
         questions = c.get('questions')
         
         if not questions:
-            st.error("⚠️ В этом кейсе пока нет вопросов. Пожалуйста, выберите другой кейс.")
+            st.error("⚠️ В этом кейсе пока нет вопросов.")
             if st.button("Назад в меню"):
                 st.session_state['interview_active'] = False
                 st.rerun()
@@ -247,17 +193,17 @@ if role == 'student':
             try:
                 questions = json.loads(questions)
             except:
-                st.error("⚠️ Ошибка в формате вопросов. Обратитесь к администратору.")
+                st.error("⚠️ Ошибка в формате вопросов.")
                 st.stop()
             
         idx = st.session_state['current_q_idx']
         
         if idx < len(questions):
             q = questions[idx]
-            st.subheader(f"{c.get('title', 'Собеседование')} (Вопрос {idx+1} из {len(questions)})")
+            st.subheader(f"{c.get('title')} (Вопрос {idx+1} из {len(questions)})")
             
             with st.expander("📄 Показать описание кейса", expanded=True):
-                st.write(c.get('description', 'Нет описания'))
+                st.write(c.get('description'))
                 
             st.markdown(f"**Вопрос:** {q['question']}")
             
@@ -265,7 +211,7 @@ if role == 'student':
             if st.button("Ответить"):
                 if ans:
                     with st.spinner("Проверяем ответ..."):
-                        prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил. Без лишних вступлений."
+                        prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил."
                         url = "https://api.groq.com/openai/v1/chat/completions"
                         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
                         payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 150, "temperature": 0.1}
@@ -296,7 +242,7 @@ if role == 'student':
                         qa_text += f"Вопрос: {item['q']}\nОтвет: {item['ans']}\nФидбек: {item['feedback']}\n\n"
                         
                     prompt = f"""
-                    Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title', 'Специалист')}" с зарплатой от {c.get('min_salary', 40000)} ₽.
+                    Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title')}" с зарплатой от {c.get('min_salary')} ₽.
                     Вот его ответы:
                     {qa_text}
                     
@@ -340,39 +286,25 @@ elif role == 'company' or is_admin:
         tab1, tab2 = tabs
         tab3 = None
 
-    # Вкладка 1: Список кейсов
     with tab1:
         st.subheader("Все одобренные кейсы" if is_admin else "База кейсов")
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
-        cases = cursor.fetchall()
-        conn.close()
+        cases = get_approved_cases()
         
         if not cases:
             st.info("Пока нет опубликованных кейсов.")
             
         for r in cases:
             with st.container():
-                title = r.get('title') or r.get('заголовок') or 'Без названия'
-                company = r.get('company') or r.get('компания') or 'Неизвестно'
-                job_title = r.get('job_title') or r.get('должность') or 'Специалист'
-                salary = r.get('min_salary') or 40000
-                difficulty = r.get('difficulty') or r.get('сложность') or 'Средний'
-                desc = r.get('description') or r.get('описание') or 'Нет описания'
-                case_id = r.get('id')
-                
-                st.markdown(f"### {title}")
-                st.caption(f"🏢 {company} | 💼 {job_title} | 💰 от {salary} ₽ | 📊 {difficulty}")
-                st.write(desc)
+                st.markdown(f"### {r.get('title', 'Без названия')}")
+                st.caption(f"🏢 {r.get('company', 'Неизвестно')} | 💼 {r.get('job_title', 'Специалист')} | 💰 от {r.get('min_salary', 40000)} ₽ | 📊 {r.get('difficulty', 'Средний')}")
+                st.write(r.get('description', 'Нет описания'))
                 
                 if is_admin:
-                    if st.button(f"❌ Удалить #{case_id}", key=f"del_admin_{case_id}"):
-                        delete_case(case_id)
+                    if st.button(f"❌ Удалить #{r['id']}", key=f"del_admin_{r['id']}"):
+                        delete_case(r['id'])
                         st.rerun()
                 st.divider()
 
-    # Вкладка 2: Добавление
     with tab2:
         st.subheader("Добавить новый кейс")
         with st.form("add_case_form"):
@@ -411,7 +343,6 @@ elif role == 'company' or is_admin:
                 else:
                     st.error("Заполните название, компанию и хотя бы 1 вопрос.")
 
-    # Вкладка 3: Модерация (только для админа)
     if tab3:
         with tab3:
             st.subheader("Кейсы на модерации")
@@ -419,20 +350,15 @@ elif role == 'company' or is_admin:
             if not pending:
                 st.info("Нет новых кейсов.")
             for p in pending:
-                title = p.get('title') or p.get('заголовок') or 'Без названия'
-                company = p.get('company') or p.get('компания') or 'Неизвестно'
-                salary = p.get('min_salary') or 40000
-                p_id = p.get('id')
-                
-                st.markdown(f"### {title} ({company})")
-                st.caption(f"💰 от {salary} ₽")
+                st.markdown(f"### {p.get('title', 'Без названия')} ({p.get('company', 'Неизвестно')})")
+                st.caption(f"💰 от {p.get('min_salary', 40000)} ₽")
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button(f"✅ Одобрить #{p_id}", key=f"app_{p_id}"):
-                        update_case_status(p_id, 'approved')
+                    if st.button(f"✅ Одобрить #{p['id']}", key=f"app_{p['id']}"):
+                        update_case_status(p['id'], 'approved')
                         st.rerun()
                 with col2:
-                    if st.button(f"❌ Удалить #{p_id}", key=f"del_pend_{p_id}"):
-                        delete_case(p_id)
+                    if st.button(f"❌ Удалить #{p['id']}", key=f"del_pend_{p['id']}"):
+                        delete_case(p['id'])
                         st.rerun()
                 st.divider()
