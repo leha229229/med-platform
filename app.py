@@ -162,7 +162,9 @@ if role == 'student':
         if idx < len(questions):
             q = questions[idx]
             st.subheader(f"{c['title']} (Вопрос {idx+1} из {len(questions)})")
-            st.write(q['question'])
+            with st.expander("📄 Показать описание кейса", expanded=True):
+                st.write(c['description'])
+            st.markdown(f"**Вопрос:** {q['question']}")
             
             ans = st.text_area("Ваш ответ:", key=f"q_{idx}")
             if st.button("Ответить"):
@@ -234,18 +236,48 @@ if role == 'student':
                         st.error(f"Ошибка: {e}")
 
 # ==========================================
-# ЛОГИКА ДЛЯ КОМПАНИЙ
+# ЛОГИКА ДЛЯ КОМПАНИЙ И АДМИНА
 # ==========================================
 elif role == 'company' or is_admin:
-    tabs = st.tabs(["➕ Предложить кейс", "🛡️ Модерация (Админ)"]) if is_admin else st.tabs(["➕ Предложить кейс"])
-    
-    with tabs[0]:
-        st.subheader("Создать новый кейс (Собеседование)")
+    if is_admin:
+        tabs = st.tabs(["📚 Все кейсы", "➕ Добавить кейс", "🛡️ Модерация"])
+        tab1, tab2, tab3 = tabs
+    else:
+        tabs = st.tabs(["📚 База кейсов", "➕ Предложить кейс"])
+        tab1, tab2 = tabs
+        tab3 = None
+
+    # Вкладка 1: Список кейсов
+    with tab1:
+        st.subheader("Все одобренные кейсы" if is_admin else "База кейсов")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, description, difficulty, company, category, min_salary, job_title FROM cases WHERE status = 'approved'")
+        cases = cursor.fetchall()
+        conn.close()
         
+        if not cases:
+            st.info("Пока нет опубликованных кейсов.")
+            
+        for r in cases:
+            with st.container():
+                st.markdown(f"### {r[1]}")
+                st.caption(f"🏢 {r[4]} | 💼 {r[7] if r[7] else 'Специалист'} | 💰 от {r[6]} ₽ | 📊 {r[3]}")
+                st.write(r[2])
+                
+                if is_admin:
+                    if st.button(f"❌ Удалить #{r[0]}", key=f"del_admin_{r[0]}"):
+                        delete_case(r[0])
+                        st.rerun()
+                st.divider()
+
+    # Вкладка 2: Добавление
+    with tab2:
+        st.subheader("Добавить новый кейс")
         with st.form("add_case_form"):
-            new_title = st.text_input("Название собеседования (например, 'Собеседование в отдел маркетинга')")
+            new_title = st.text_input("Название собеседования")
             new_company = st.text_input("Компания")
-            new_job_title = st.text_input("Должность (например, 'Менеджер по продукту')")
+            new_job_title = st.text_input("Должность")
             new_category = st.selectbox("Направление", ["НИИ", "Больницы", "Фарм-маркетинг"])
             new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
             new_salary = st.number_input("Зарплата (от)", min_value=40000, max_value=150000, value=80000, step=5000)
@@ -256,32 +288,46 @@ elif role == 'company' or is_admin:
             a1 = st.text_area("Эталонный ответ 1")
             q2 = st.text_area("Вопрос 2 (необязательно)")
             a2 = st.text_area("Эталонный ответ 2 (необязательно)")
-            q3 = st.text_area("Вопрос 3 (необязательно)")
-            a3 = st.text_area("Эталонный ответ 3 (необязательно)")
             
-            if st.form_submit_button("Отправить на модерацию"):
+            if st.form_submit_button("Отправить"):
                 questions = []
                 if q1 and a1: questions.append({"question": q1, "correct_answer": a1})
                 if q2 and a2: questions.append({"question": q2, "correct_answer": a2})
-                if q3 and a3: questions.append({"question": q3, "correct_answer": a3})
                 
                 if new_title and new_company and questions:
-                    add_case(new_title, new_description, new_difficulty, new_company, new_category, new_salary, new_job_title, json.dumps(questions, ensure_ascii=False))
-                    st.success("Отправлено на модерацию!")
+                    # Если админ — публикуем сразу, если компания — на модерацию
+                    status = 'approved' if is_admin else 'pending'
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (new_title, new_description, new_difficulty, new_company, status, new_category, new_salary, new_job_title, json.dumps(questions, ensure_ascii=False))
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Кейс добавлен!")
                     time.sleep(1)
                     st.rerun()
                 else:
                     st.error("Заполните название, компанию и хотя бы 1 вопрос.")
-                    
-    if is_admin and len(tabs) > 1:
-        with tabs[1]:
-            st.subheader("На модерации")
+
+    # Вкладка 3: Модерация (только для админа)
+    if tab3:
+        with tab3:
+            st.subheader("Кейсы на модерации")
             pending = get_pending_cases()
+            if not pending:
+                st.info("Нет новых кейсов.")
             for p in pending:
                 st.markdown(f"### {p['title']} ({p['company']})")
-                if st.button(f"✅ Одобрить #{p['id']}"):
-                    update_case_status(p['id'], 'approved')
-                    st.rerun()
-                if st.button(f"❌ Удалить #{p['id']}"):
-                    delete_case(p['id'])
-                    st.rerun()
+                st.caption(f"💰 от {p['min_salary']} ₽")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"✅ Одобрить #{p['id']}", key=f"app_{p['id']}"):
+                        update_case_status(p['id'], 'approved')
+                        st.rerun()
+                with col2:
+                    if st.button(f"❌ Удалить #{p['id']}", key=f"del_pend_{p['id']}"):
+                        delete_case(p['id'])
+                        st.rerun()
+                st.divider()
