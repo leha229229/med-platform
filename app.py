@@ -27,6 +27,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Создаем только базовые колонки
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cases (
             id SERIAL PRIMARY KEY,
@@ -37,15 +38,37 @@ def init_db():
             status TEXT DEFAULT 'pending',
             correct_answer TEXT,
             category TEXT,
-            min_salary INTEGER DEFAULT 40000,
-            job_title TEXT,
-            questions JSONB
+            min_salary INTEGER DEFAULT 40000
         )
     ''')
     conn.commit()
     conn.close()
 
 init_db()
+
+def parse_case_row(r):
+    """Вспомогательная функция для распаковки данных из description"""
+    d = dict(r)
+    desc = d.get('description', '')
+    
+    # Значения по умолчанию
+    d['job_title'] = 'Специалист'
+    d['questions'] = None
+    
+    # Вытаскиваем должность
+    if "[ДОЛЖНОСТЬ:" in desc:
+        d['description'] = desc.split("[ДОЛЖНОСТЬ:")[0].strip()
+        d['job_title'] = desc.split("[ДОЛЖНОСТЬ:")[1].split("]")[0].strip()
+        
+    # Вытаскиваем вопросы
+    if "[ВОПРОСЫ:" in desc:
+        q_str = desc.split("[ВОПРОСЫ:")[1].split("]")[0].strip()
+        try:
+            d['questions'] = json.loads(q_str)
+        except:
+            d['questions'] = None
+            
+    return d
 
 def get_approved_cases(category=None):
     conn = get_db_connection()
@@ -56,7 +79,7 @@ def get_approved_cases(category=None):
         cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
     rows = cursor.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [parse_case_row(r) for r in rows]
 
 def get_pending_cases():
     conn = get_db_connection()
@@ -64,14 +87,18 @@ def get_pending_cases():
     cursor.execute("SELECT * FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [parse_case_row(r) for r in rows]
 
 def add_case(title, description, difficulty, company, category, min_salary, job_title, questions_json):
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Упаковываем всё в description
+    safe_desc = f"{description}\n\n[ДОЛЖНОСТЬ: {job_title}]\n[ВОПРОСЫ: {questions_json}]"
+    
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s)",
-        (title, description, difficulty, company, category, min_salary, job_title, questions_json)
+        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary) VALUES (%s, %s, %s, %s, 'pending', %s, %s)",
+        (title, safe_desc, difficulty, company, category, min_salary)
     )
     conn.commit()
     conn.close()
@@ -183,7 +210,7 @@ if role == 'student':
         questions = c.get('questions')
         
         if not questions:
-            st.error("⚠️ В этом кейсе пока нет вопросов.")
+            st.error("⚠️ В этом кейсе пока нет вопросов. Пожалуйста, выберите другой кейс.")
             if st.button("Назад в меню"):
                 st.session_state['interview_active'] = False
                 st.rerun()
@@ -200,10 +227,10 @@ if role == 'student':
         
         if idx < len(questions):
             q = questions[idx]
-            st.subheader(f"{c.get('title')} (Вопрос {idx+1} из {len(questions)})")
+            st.subheader(f"{c.get('title', 'Собеседование')} (Вопрос {idx+1} из {len(questions)})")
             
             with st.expander("📄 Показать описание кейса", expanded=True):
-                st.write(c.get('description'))
+                st.write(c.get('description', 'Нет описания'))
                 
             st.markdown(f"**Вопрос:** {q['question']}")
             
@@ -242,7 +269,7 @@ if role == 'student':
                         qa_text += f"Вопрос: {item['q']}\nОтвет: {item['ans']}\nФидбек: {item['feedback']}\n\n"
                         
                     prompt = f"""
-                    Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title')}" с зарплатой от {c.get('min_salary')} ₽.
+                    Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title', 'Специалист')}" с зарплатой от {c.get('min_salary', 40000)} ₽.
                     Вот его ответы:
                     {qa_text}
                     
@@ -328,15 +355,7 @@ elif role == 'company' or is_admin:
                 if q2 and a2: questions.append({"question": q2, "correct_answer": a2})
                 
                 if new_title and new_company and questions:
-                    status = 'approved' if is_admin else 'pending'
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        (new_title, new_description, new_difficulty, new_company, status, new_category, new_salary, new_job_title, json.dumps(questions, ensure_ascii=False))
-                    )
-                    conn.commit()
-                    conn.close()
+                    add_case(new_title, new_description, new_difficulty, new_company, new_category, new_salary, new_job_title, json.dumps(questions, ensure_ascii=False))
                     st.success("Кейс добавлен!")
                     time.sleep(1)
                     st.rerun()
