@@ -250,9 +250,11 @@ elif role == 'company' or is_admin:
     # Вкладка 1: Список кейсов
     with tab1:
         st.subheader("Все одобренные кейсы" if is_admin else "База кейсов")
+        
+        # Используем SELECT *, чтобы не зависеть от названий колонок
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, title, description, difficulty, company, category, min_salary, job_title FROM cases WHERE status = 'approved'")
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
         cases = cursor.fetchall()
         conn.close()
         
@@ -261,13 +263,22 @@ elif role == 'company' or is_admin:
             
         for r in cases:
             with st.container():
-                st.markdown(f"### {r[1]}")
-                st.caption(f"🏢 {r[4]} | 💼 {r[7] if r[7] else 'Специалист'} | 💰 от {r[6]} ₽ | 📊 {r[3]}")
-                st.write(r[2])
+                # Безопасное извлечение (работает и с русскими, и с английскими колонками)
+                title = r.get('title') or r.get('заголовок') or 'Без названия'
+                company = r.get('company') or r.get('компания') or 'Неизвестно'
+                job_title = r.get('job_title') or r.get('должность') or 'Специалист'
+                salary = r.get('min_salary') or 40000
+                difficulty = r.get('difficulty') or r.get('сложность') or 'Средний'
+                desc = r.get('description') or r.get('описание') or 'Нет описания'
+                case_id = r.get('id')
+                
+                st.markdown(f"### {title}")
+                st.caption(f"🏢 {company} | 💼 {job_title} | 💰 от {salary} ₽ | 📊 {difficulty}")
+                st.write(desc)
                 
                 if is_admin:
-                    if st.button(f"❌ Удалить #{r[0]}", key=f"del_admin_{r[0]}"):
-                        delete_case(r[0])
+                    if st.button(f"❌ Удалить #{case_id}", key=f"del_admin_{case_id}"):
+                        delete_case(case_id)
                         st.rerun()
                 st.divider()
 
@@ -295,10 +306,10 @@ elif role == 'company' or is_admin:
                 if q2 and a2: questions.append({"question": q2, "correct_answer": a2})
                 
                 if new_title and new_company and questions:
-                    # Если админ — публикуем сразу, если компания — на модерацию
                     status = 'approved' if is_admin else 'pending'
                     conn = get_db_connection()
                     cursor = conn.cursor()
+                    # Используем имена колонок, которые точно есть в твоей базе (английские)
                     cursor.execute(
                         "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (new_title, new_description, new_difficulty, new_company, status, new_category, new_salary, new_job_title, json.dumps(questions, ensure_ascii=False))
@@ -319,15 +330,20 @@ elif role == 'company' or is_admin:
             if not pending:
                 st.info("Нет новых кейсов.")
             for p in pending:
-                st.markdown(f"### {p['title']} ({p['company']})")
-                st.caption(f"💰 от {p['min_salary']} ₽")
+                title = p.get('title') or p.get('заголовок') or 'Без названия'
+                company = p.get('company') or p.get('компания') or 'Неизвестно'
+                salary = p.get('min_salary') or 40000
+                p_id = p.get('id')
+                
+                st.markdown(f"### {title} ({company})")
+                st.caption(f"💰 от {salary} ₽")
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button(f"✅ Одобрить #{p['id']}", key=f"app_{p['id']}"):
-                        update_case_status(p['id'], 'approved')
+                    if st.button(f"✅ Одобрить #{p_id}", key=f"app_{p_id}"):
+                        update_case_status(p_id, 'approved')
                         st.rerun()
                 with col2:
-                    if st.button(f"❌ Удалить #{p['id']}", key=f"del_pend_{p['id']}"):
-                        delete_case(p['id'])
+                    if st.button(f"❌ Удалить #{p_id}", key=f"del_pend_{p_id}"):
+                        delete_case(p_id)
                         st.rerun()
                 st.divider()
