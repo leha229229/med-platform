@@ -35,44 +35,77 @@ def init_db():
             company TEXT,
             status TEXT DEFAULT 'pending',
             correct_answer TEXT,
-            category TEXT
+            category TEXT,
+            min_salary INTEGER DEFAULT 40000
         )
     ''')
-    # Миграция, если база была создана ранее без колонки category
+    # Миграции для новых колонок
     try:
         cursor.execute("ALTER TABLE cases ADD COLUMN category TEXT")
+        cursor.execute("ALTER TABLE cases ADD COLUMN min_salary INTEGER DEFAULT 40000")
     except psycopg2.errors.DuplicateColumn:
-        conn.rollback() # Откатываем транзакцию, если колонка уже есть
+        conn.rollback()
     conn.commit()
     conn.close()
 
 init_db()
 
-def get_approved_cases(category_filter=None):
+def get_cases_by_salary(target_salary, category_filter=None):
+    """Выбирает 3 кейса: 2 подходящих по зп, 1 на вырост (сложнее)"""
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    base_query = "SELECT id, title, description, difficulty, company, correct_answer, category, min_salary FROM cases WHERE status = 'approved'"
+    params = []
+    
     if category_filter:
-        cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category FROM cases WHERE status = 'approved' AND category = %s", (category_filter,))
-    else:
-        cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category FROM cases WHERE status = 'approved'")
-    rows = cursor.fetchall()
+        base_query += " AND category = %s"
+        params.append(category_filter)
+        
+    # Получаем все подходящие кейсы
+    cursor.execute(base_query, tuple(params))
+    all_cases = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5], "category": r[6]} for r in rows]
+    
+    if not all_cases:
+        return []
+
+    # Сортируем по зарплате
+    easy_cases = [c for c in all_cases if c[7] <= target_salary - 20000]
+    target_cases = [c for c in all_cases if target_salary - 20000 < c[7] <= target_salary]
+    hard_cases = [c for c in all_cases if c[7] > target_salary]
+
+    import random
+    selected = []
+    
+    # Берем 1 базовый, 1 целевой, 1 сложный (если есть)
+    if easy_cases: selected.append(random.choice(easy_cases))
+    if target_cases: selected.append(random.choice(target_cases))
+    if hard_cases: selected.append(random.choice(hard_cases))
+    
+    # Если набрали меньше 3, добиваем чем есть
+    while len(selected) < 3 and all_cases:
+        c = random.choice(all_cases)
+        if c not in selected:
+            selected.append(c)
+
+    # Форматируем в словари
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5], "category": r[6], "min_salary": r[7]} for r in selected[:3]]
 
 def get_pending_cases():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category FROM cases WHERE status = 'pending'")
+    cursor.execute("SELECT id, title, description, difficulty, company, correct_answer, category, min_salary FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5], "category": r[6]} for r in rows]
+    return [{"id": r[0], "title": r[1], "description": r[2], "difficulty": r[3], "company": r[4], "correct_answer": r[5], "category": r[6], "min_salary": r[7]} for r in rows]
 
-def add_case(title, description, difficulty, company, correct_answer, category):
+def add_case(title, description, difficulty, company, correct_answer, category, min_salary):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status, correct_answer, category) VALUES (%s, %s, %s, %s, 'pending', %s, %s)",
-        (title, description, difficulty, company, correct_answer, category)
+        "INSERT INTO cases (title, description, difficulty, company, status, correct_answer, category, min_salary) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s)",
+        (title, description, difficulty, company, correct_answer, category, min_salary)
     )
     conn.commit()
     conn.close()
@@ -92,25 +125,39 @@ def delete_case(case_id):
     conn.close()
 
 # ==========================================
-# АВТОРИЗАЦИЯ И РОЛИ
+# JS-ЗАЩИТА ОТ ВСТАВКИ
+# ==========================================
+js_block_paste = """
+<script>
+    setTimeout(function() {
+        const textareas = window.parent.document.querySelectorAll('textarea');
+        textareas.forEach(ta => {
+            ta.addEventListener('paste', function(e) {
+                e.preventDefault();
+                alert('Вставка текста запрещена! Пожалуйста, введите ответ вручную.');
+            });
+            ta.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+        });
+    }, 1000);
+</script>
+"""
+st.markdown(js_block_paste, unsafe_allow_html=True)
+
+# ==========================================
+# АВТОРИЗАЦИЯ
 # ==========================================
 st.sidebar.title("Управление")
-st.sidebar.caption("Введите пароль для доступа к админ-панели.")
 admin_pass_input = st.sidebar.text_input("Пароль администратора", type="password")
-
 is_admin = False
 if admin_pass_input == ADMIN_PASSWORD:
     is_admin = True
     st.sidebar.success("✅ Вы вошли как Администратор")
 
-# Выбор роли (если не админ)
 if 'user_role' not in st.session_state:
     st.session_state['user_role'] = None
 
 if not is_admin and st.session_state['user_role'] is None:
-    st.title("🩺 Добро пожаловать на МедПлатформу!")
-    st.write("Пожалуйста, выберите, кто вы:")
-    
+    st.title("🩺 Добро пожаловать!")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🎓 Я Студент", use_container_width=True):
@@ -120,204 +167,218 @@ if not is_admin and st.session_state['user_role'] is None:
         if st.button("🏢 Я Компания", use_container_width=True):
             st.session_state['user_role'] = 'company'
             st.rerun()
-    st.stop() # Останавливаем дальнейшую загрузку, пока не выберут роль
+    st.stop()
 
 # ==========================================
-# ОСНОВНОЙ ИНТЕРФЕЙС
+# ИНТЕРФЕЙС
 # ==========================================
 st.set_page_config(page_title="МедПлатформа", page_icon="🩺")
 st.title("🩺 Платформа для студентов-медиков")
 
-if is_admin:
-    st.info("Режим Администратора: доступны все функции.")
-    role = 'admin'
-elif st.session_state['user_role'] == 'student':
-    st.info("Вы вошли как Студент. Выберите кейс и проверьте свои силы.")
-    role = 'student'
-else:
-    st.info("Вы вошли как Компания. Здесь вы можете предложить кейс и посмотреть уровень студентов.")
-    role = 'company'
+role = 'admin' if is_admin else st.session_state['user_role']
 
-# ==========================================
-# ВКЛАДКИ В ЗАВИСИМОСТИ ОТ РОЛИ
-# ==========================================
+# Сброс теста
+if "test_active" not in st.session_state:
+    st.session_state.test_active = False
+if "test_cases" not in st.session_state:
+    st.session_state.test_cases = []
+if "test_answers" not in st.session_state:
+    st.session_state.test_answers = {}
+if "test_start_time" not in st.session_state:
+    st.session_state.test_start_time = 0
+
+# --- РЕЖИМ СТУДЕНТА (ТЕСТ) ---
 if role == 'student':
-    # Если студент, создаем только одну вкладку, но забираем её из списка [0]
-    tab1 = st.tabs(["📚 Решение кейсов"])[0]
-    tab2 = None
-    tab3 = None
-elif role == 'company':
-    tab1, tab2 = st.tabs(["📚 База кейсов", "➕ Предложить кейс"])
-    tab3 = None
-elif role == 'admin':
-    tab1, tab2, tab3 = st.tabs(["📚 Список кейсов", "➕ Предложить кейс", "🛡️ Модерация"])
-# --- ВКЛАДКА 1: СПИСОК КЕЙСОВ (ДЛЯ ВСЕХ) ---
-with tab1:
-    if role == 'student':
-        st.subheader("Выбери направление:")
-        category_filter = st.radio("Фильтр по типу:", ["Все", "НИИ", "Больницы", "Фарм-маркетинг"], horizontal=True)
-        cat_db = None if category_filter == "Все" else category_filter
-        cases = get_approved_cases(cat_db)
-    else:
-        st.subheader("Опубликованные кейсы")
-        cases = get_approved_cases()
-
-    if cases:
-        for case in cases:
-            with st.container():
-                st.markdown(f"### {case['title']}")
-                st.caption(f"🏷️ {case['category']} | Сложность: {case['difficulty']} | Компания: {case['company']}")
-                st.write(f"*{case['description']}*")
-                
-                if role in ['student', 'admin']:
-                    if st.button(f"Решить кейс #{case['id']}", key=f"btn_{case['id']}"):
-                        st.session_state['current_case'] = case
-                        st.session_state['start_time'] = time.time()
-                
-                if role == 'admin':
-                    if st.button(f"❌ Удалить #{case['id']}", key=f"del_approved_{case['id']}"):
-                        delete_case(case['id'])
-                        st.rerun()
-                st.divider()
-    else:
-        st.info("Пока нет доступных кейсов в этой категории.")
-
-# --- ВКЛАДКА 2: ПРЕДЛОЖИТЬ КЕЙС (ДЛЯ КОМПАНИЙ И АДМИНА) ---
-if tab2:
-    with tab2:
-        st.subheader("Предложить новый кейс")
-        st.info("💡 Ваш кейс будет опубликован на платформе только после проверки администратором.")
+    if not st.session_state.test_active:
+        st.subheader("🎯 Оценка вашей рыночной стоимости")
+        st.write("Выберите желаемую зарплату, и мы проверим, соответствуете ли вы ей. Будет 3 вопроса.")
         
-        with st.form("add_case_form"):
-            new_title = st.text_input("Название кейса")
-            new_company = st.text_input("Название компании")
-            new_category = st.selectbox("Направление", ["НИИ", "Больницы", "Фарм-маркетинг"])
-            new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
-            new_description = st.text_area("Описание задачи (симптомы/условия)")
-            new_correct_answer = st.text_area("Эталонный ответ (правильный диагноз/решение)")
+        target_salary = st.slider("Желаемая зарплата (₽)", min_value=40000, max_value=150000, value=80000, step=5000)
+        
+        category_filter = st.selectbox("Направление", ["Все", "НИИ", "Больницы", "Фарм-маркетинг"])
+        cat_db = None if category_filter == "Все" else category_filter
+        
+        if st.button("Начать собеседование"):
+            cases = get_cases_by_salary(target_salary, cat_db)
+            if cases:
+                st.session_state.test_cases = cases
+                st.session_state.test_active = True
+                st.session_state.test_answers = {}
+                st.session_state.test_target_salary = target_salary
+                st.session_state.test_start_time = time.time()
+                st.rerun()
+            else:
+                st.error("Нет кейсов для выбранной категории. Попробуйте другое направление.")
+    else:
+        # Прохождение теста
+        st.subheader(f"Собеседование на {st.session_state.test_target_salary} ₽")
+        
+        # Находим текущий вопрос (первый, на который нет ответа)
+        current_idx = -1
+        for i, c in enumerate(st.session_state.test_cases):
+            if str(c['id']) not in st.session_state.test_answers:
+                current_idx = i
+                break
+                
+        if current_idx != -1:
+            c = st.session_state.test_cases[current_idx]
+            st.info(f"Вопрос {current_idx + 1} из {len(st.session_state.test_cases)} (Сложность: {c['difficulty']})")
+            st.markdown(f"### {c['title']}")
+            st.write(c['description'])
             
-            submit_button = st.form_submit_button("Отправить на модерацию")
-            
-            if submit_button:
-                if new_title and new_company and new_correct_answer:
-                    add_case(new_title, new_description, new_difficulty, new_company, new_correct_answer, new_category)
-                    st.success("✅ Кейс отправлен на модерацию!")
-                    time.sleep(1)
+            ans = st.text_area("Ваш ответ:", key=f"ans_{c['id']}")
+            if st.button("Ответить"):
+                if ans:
+                    # Считаем скорость печати
+                    time_spent = time.time() - st.session_state.test_start_time
+                    # (Упрощенно, просто сохраняем)
+                    st.session_state.test_answers[str(c['id'])] = ans
+                    st.session_state.test_start_time = time.time()
                     st.rerun()
                 else:
-                    st.warning("Заполните все обязательные поля.")
-
-# --- ВКЛАДКА 3: МОДЕРАЦИЯ (ТОЛЬКО ДЛЯ АДМИНА) ---
-if tab3:
-    with tab3:
-        st.subheader("Кейсы на модерации")
-        pending = get_pending_cases()
-        if pending:
-            for p_case in pending:
-                with st.container():
-                    st.markdown(f"### {p_case['title']}")
-                    st.caption(f"🏷️ {p_case['category']} | Компания: {p_case['company']}")
-                    st.write(p_case['description'])
-                    st.info(f"Эталонный ответ: {p_case['correct_answer']}")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button(f"✅ Одобрить #{p_case['id']}", key=f"app_{p_case['id']}"):
-                            update_case_status(p_case['id'], 'approved')
-                            st.rerun()
-                    with col2:
-                        if st.button(f"❌ Удалить #{p_case['id']}", key=f"del_{p_case['id']}"):
-                            delete_case(p_case['id'])
-                            st.rerun()
-                    st.divider()
+                    st.warning("Напишите ответ!")
         else:
-            st.info("Нет новых кейсов на модерации. Отдыхай!")
-
-# ==========================================
-# РЕШЕНИЕ КЕЙСА И АНТИПЛАГИАТ (ДЛЯ СТУДЕНТОВ И АДМИНА)
-# ==========================================
-if 'current_case' in st.session_state:
-    case = st.session_state['current_case']
-    st.divider()
-    st.subheader(f"Решение кейса: {case['title']}")
-    st.caption(f"🏷️ Категория: {case['category']}")
-    
-    student_answer = st.text_area("Напиши свой ответ:", height=150, key="student_answer_area")
-    
-    if st.button("Отправить на проверку ИИ"):
-        if student_answer:
-            time_spent = time.time() - st.session_state.get('start_time', time.time())
-            chars_per_minute = (len(student_answer) / time_spent) * 60 if time_spent > 0 else 9999
-            
-            with st.spinner("Нейросеть анализирует ответ..."):
-                # ДИНАМИЧЕСКИЙ ПРОМПТ В ЗАВИСИМОСТИ ОТ КАТЕГОРИИ
-                if case['category'] == 'НИИ':
-                    persona = "Ты — строгий научный рецензент в НИИ. Оцени, соблюдены ли принципы доказательной медицины, есть ли логические ошибки в выводах."
-                elif case['category'] == 'Фарм-маркетинг':
-                    persona = "Ты — коммерческий директор фарм-компании. Оцени ответ с точки зрения ROI, маржинальности, реалистичности бизнес-плана и знания рынка."
-                else: # Больницы
-                    persona = "Ты — заведующий отделением больницы. Оцени, провел ли студент дифференциальную диагностику, назначил ли правильные анализы и не навредил ли пациенту."
-
-                prompt = f"""
-                {persona}
-                
-                Кейс: "{case['description']}"
-                ЭТАЛОННЫЙ ОТВЕТ: "{case['correct_answer']}"
-                Ответ студента: "{student_answer}"
-                
-                Твоя задача: Оценить ответ студента по 100-балльной шкале, строго следуя критериям:
-                1. (60 баллов) Правильно ли определена суть (диагноз/решение)?
-                2. (20 баллов) Есть ли обоснование?
-                3. (20 баллов) Упомянуты ли правильные методы/инструменты?
-                
-                ВАЖНО: Выведи ответ СТРОГО по шаблону:
-                Оценка: [число от 1 до 100]/100
-                Фидбек: [твой текст (2-3 предложения)]
-                AI_SUSPECT: [YES или NO]
-                """
-                
-                url = "https://api.groq.com/openai/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.1}
-                
-                try:
-                    # Делаем до 2-х попыток, если ИИ отвечает не по формату
-                    max_retries = 2
-                    for attempt in range(max_retries):
+            # Все ответы получены, отправляем на проверку
+            st.success("Все ответы получены! Нажмите кнопку ниже для анализа.")
+            if st.button("Получить вердикт ИИ"):
+                with st.spinner("Анализируем ваши ответы..."):
+                    # Формируем запрос
+                    qa_text = ""
+                    for c in st.session_state.test_cases:
+                        qa_text += f"Вопрос: {c['title']}\nЭталон: {c['correct_answer']}\nОтвет студента: {st.session_state.test_answers[str(c['id'])]}\n\n"
+                    
+                    prompt = f"""
+                    Ты — Senior HR и эксперт в фарм/мед индустрии.
+                    Студент претендует на зарплату {st.session_state.test_target_salary} рублей.
+                    Он ответил на 3 вопроса:
+                    
+                    {qa_text}
+                    
+                    Твоя задача:
+                    1. Оцени каждый ответ (1-10).
+                    2. Сделай вывод: соответствует ли студент заявленной зарплате?
+                    3. Дай финальный вердикт по шкале:
+                    - Если ответы слабые, предложи зарплату ниже (например, "Реальная стоимость: 60 000 ₽").
+                    - Если сильные, предложи выше.
+                    - Напиши, что нужно подтянуть, чтобы получить больше.
+                    
+                    ВАЖНО: Выведи ответ СТРОГО по шаблону:
+                    Вердикт: [Одобрено на X / Рекомендуем Y]
+                    Фидбек: [твой текст]
+                    AI_SUSPECT: [YES/NO]
+                    """
+                    
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.1}
+                    
+                    try:
                         response = requests.post(url, headers=headers, json=payload, timeout=15)
                         response.raise_for_status()
                         response_text = response.json()['choices'][0]['message']['content']
                         
-                        score_match = re.search(r'Оценка:\s*(\d+)', response_text, re.IGNORECASE)
-                        score = score_match.group(1) if score_match else None
-
-                        if score is not None:
-                            break # Если нашли оценку — выходим из цикла, всё ок
+                        verdict_match = re.search(r'Вердикт:\s*(.*?)(?=\n|Фидбек|$)', response_text, re.IGNORECASE)
+                        verdict = verdict_match.group(1).strip() if verdict_match else "Не распознан"
                         
-                        # Если оценки нет, значит формат сломался. Пробуем еще раз с другим промптом
-                        if attempt < max_retries - 1:
-                            # Добавляем в промпт просьбу исправиться
-                            payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Твой предыдущий ответ был не по формату. Строго соблюдай шаблон: Оценка: [число]/100 \n Фидбек: [текст] \n AI_SUSPECT: [YES/NO]"
-
-                    if score is None:
-                        st.error("⚠️ Нейросеть трижды не смогла ответить по формату. Попробуйте переформулировать ответ.")
-                        st.code(response_text)
-                        st.stop()
-
-                    feedback_match = re.search(r'Фидбек:\s*(.*?)(?=AI_SUSPECT|$)', response_text, re.IGNORECASE | re.DOTALL)
-                    feedback = feedback_match.group(1).strip() if feedback_match else "Не удалось распознать."
-
-                    ai_suspect = "YES" if "AI_SUSPECT: YES" in response_text.upper().replace(" ", "") else "NO"
-                    
-                    st.success(f"Оценка: {score}/100")
-                    st.info(f"Фидбек от ИИ: {feedback}")
-                    
-                    if ai_suspect == "YES" and chars_per_minute > 500:
-                        st.error(f"🚨 Вердикт: СИЛЬНОЕ ПОДОЗРЕНИЕ НА ИИ. (Скорость ввода: {int(chars_per_minute)} симв/мин).")
-                    else:
-                        st.success("✅ Вердикт антиплагиата: Чисто.")
+                        feedback_match = re.search(r'Фидбек:\s*(.*?)(?=AI_SUSPECT|$)', response_text, re.IGNORECASE | re.DOTALL)
+                        feedback = feedback_match.group(1).strip() if feedback_match else "Не удалось."
                         
-                except requests.exceptions.Timeout:
-                    st.error("⚠️ Таймаут. Нейросеть слишком долго думает. Попробуйте еще раз.")
-                except Exception as e:
-                    st.error(f"Ошибка: {str(e)}")
+                        st.success(f"Вердикт: {verdict}")
+                        st.info(f"Фидбек: {feedback}")
+                        
+                        if st.button("Пройти еще раз"):
+                            st.session_state.test_active = False
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Ошибка: {str(e)}")
+
+# --- РЕЖИМ КОМПАНИИ ---
+elif role == 'company':
+    tab1, tab2 = st.tabs(["📚 База кейсов", "➕ Предложить кейс"])
+    with tab1:
+        st.subheader("Опубликованные кейсы")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, description, difficulty, company, category, min_salary FROM cases WHERE status = 'approved'")
+        cases = cursor.fetchall()
+        conn.close()
+        for r in cases:
+            st.markdown(f"### {r[1]}")
+            st.caption(f"🏷️ {r[5]} | Сложность: {r[3]} | Компания: {r[4]} | ЗП: от {r[6]} ₽")
+            st.write(r[2])
+            st.divider()
+            
+    with tab2:
+        st.subheader("Добавить кейс")
+        with st.form("add_case"):
+            new_title = st.text_input("Название")
+            new_company = st.text_input("Компания")
+            new_category = st.selectbox("Направление", ["НИИ", "Больницы", "Фарм-маркетинг"])
+            new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
+            new_salary = st.number_input("Мин. зарплата для кейса (₽)", min_value=40000, max_value=150000, value=80000, step=5000)
+            new_description = st.text_area("Описание")
+            new_correct = st.text_area("Эталонный ответ")
+            
+            if st.form_submit_button("Отправить"):
+                if new_title and new_company:
+                    add_case(new_title, new_description, new_difficulty, new_company, new_correct, new_category, new_salary)
+                    st.success("Отправлено на модерацию!")
+                    time.sleep(1)
+                    st.rerun()
+
+# --- РЕЖИМ АДМИНА ---
+elif role == 'admin':
+    tab1, tab2, tab3 = st.tabs(["📚 Кейсы", "➕ Добавить", "🛡️ Модерация"])
+    with tab1:
+        st.subheader("Все одобренные кейсы")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, description, difficulty, company, category, min_salary FROM cases WHERE status = 'approved'")
+        cases = cursor.fetchall()
+        conn.close()
+        for r in cases:
+            st.markdown(f"### {r[1]}")
+            st.caption(f"🏷️ {r[5]} | Сложность: {r[3]} | ЗП: от {r[6]} ₽")
+            if st.button(f"Удалить #{r[0]}", key=f"del_{r[0]}"):
+                delete_case(r[0])
+                st.rerun()
+            st.divider()
+
+    with tab2:
+        st.subheader("Добавить кейс")
+        with st.form("add_case_admin"):
+            new_title = st.text_input("Название")
+            new_company = st.text_input("Компания")
+            new_category = st.selectbox("Направление", ["НИИ", "Больницы", "Фарм-маркетинг"])
+            new_difficulty = st.selectbox("Сложность", ["Легкий", "Средний", "Сложный"])
+            new_salary = st.number_input("Мин. зарплата (₽)", min_value=40000, max_value=150000, value=80000, step=5000)
+            new_description = st.text_area("Описание")
+            new_correct = st.text_area("Эталон")
+            
+            if st.form_submit_button("Опубликовать сразу"):
+                if new_title and new_company:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("INSERT INTO cases (title, description, difficulty, company, status, correct_answer, category, min_salary) VALUES (%s, %s, %s, %s, 'approved', %s, %s, %s)",
+                                   (new_title, new_description, new_difficulty, new_company, new_correct, new_category, new_salary))
+                    conn.commit()
+                    conn.close()
+                    st.success("Кейс добавлен!")
+                    time.sleep(1)
+                    st.rerun()
+
+    with tab3:
+        st.subheader("Модерация")
+        pending = get_pending_cases()
+        for p in pending:
+            st.markdown(f"### {p['title']}")
+            st.caption(f"🏷️ {p['category']} | ЗП: от {p['min_salary']} ₽")
+            st.write(p['description'])
+            col1, col2 = st.columns(2)
+            if col1.button(f"✅ Одобрить #{p['id']}"):
+                update_case_status(p['id'], 'approved')
+                st.rerun()
+            if col2.button(f"❌ Удалить #{p['id']}"):
+                delete_case(p['id'])
+                st.rerun()
+            st.divider()
