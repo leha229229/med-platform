@@ -140,9 +140,22 @@ if role == 'student':
     # Если тест активен, показываем вопросы
     else:
         c = st.session_state['current_case']
-        questions = c['questions']
+        questions = c.get('questions')
+        
+        # Защита от пустых вопросов
+        if not questions:
+            st.error("⚠️ В этом кейсе пока нет вопросов. Пожалуйста, выберите другой кейс.")
+            if st.button("Назад в меню"):
+                st.session_state['interview_active'] = False
+                st.rerun()
+            st.stop()
+            
         if isinstance(questions, str):
-            questions = json.loads(questions)
+            try:
+                questions = json.loads(questions)
+            except:
+                st.error("⚠️ Ошибка в формате вопросов. Обратитесь к администратору.")
+                st.stop()
             
         idx = st.session_state['current_q_idx']
         
