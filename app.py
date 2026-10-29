@@ -27,7 +27,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Создаем таблицу со всеми нужными колонками
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cases (
             id SERIAL PRIMARY KEY,
@@ -38,24 +37,13 @@ def init_db():
             status TEXT DEFAULT 'pending',
             correct_answer TEXT,
             category TEXT,
-            min_salary INTEGER DEFAULT 40000,
-            job_title TEXT,
-            questions JSONB
+            min_salary INTEGER DEFAULT 40000
         )
     ''')
-    
-    # Принудительно добавляем колонки, если их нет (миграция)
-    try:
-        cursor.execute("ALTER TABLE cases ADD COLUMN category TEXT")
-        cursor.execute("ALTER TABLE cases ADD COLUMN min_salary INTEGER DEFAULT 40000")
-        cursor.execute("ALTER TABLE cases ADD COLUMN job_title TEXT")
-        cursor.execute("ALTER TABLE cases ADD COLUMN questions JSONB")
-    except psycopg2.errors.DuplicateColumn:
-        conn.rollback()
     conn.commit()
     conn.close()
 
-init_db()
+init_db()  # <--- Вот эта строчка должна идти сразу после закрытия функции
 
 def get_approved_cases(category=None):
     conn = get_db_connection()
@@ -66,26 +54,74 @@ def get_approved_cases(category=None):
         cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
     rows = cursor.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
-
+    
+    result = []
+    for r in rows:
+        d = dict(r)
+        desc = d.get('description', '')
+        
+        # Распаковываем должность и вопросы обратно
+        d['job_title'] = 'Специалист'
+        d['questions'] = None
+        
+        if "[ДОЛЖНОСТЬ:" in desc:
+            parts = desc.split("[ДОЛЖНОСТЬ: ")
+            d['description'] = parts[0].strip()
+            rest = parts[1]
+            d['job_title'] = rest.split("]")[0]
+            
+        if "[ВОПРОСЫ: " in desc:
+            q_part = desc.split("[ВОПРОСЫ: ")[1]
+            q_json_str = q_part.rsplit("]", 1)[0]
+            try:
+                d['questions'] = json.loads(q_json_str)
+            except:
+                pass
+                
+        result.append(d)
+    return result
 def get_pending_cases():
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("SELECT * FROM cases WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    
+    result = []
+    for r in rows:
+        d = dict(r)
+        desc = d.get('description', '')
+        d['job_title'] = 'Специалист'
+        d['questions'] = None
+        
+        if "[ДОЛЖНОСТЬ:" in desc:
+            parts = desc.split("[ДОЛЖНОСТЬ: ")
+            d['description'] = parts[0].strip()
+            d['job_title'] = parts[1].split("]")[0]
+            
+        if "[ВОПРОСЫ: " in desc:
+            q_part = desc.split("[ВОПРОСЫ: ")[1]
+            q_json_str = q_part.rsplit("]", 1)[0]
+            try:
+                d['questions'] = json.loads(q_json_str)
+            except:
+                pass
+        result.append(d)
+    return result
 
 def add_case(title, description, difficulty, company, category, min_salary, job_title, questions_json):
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Упаковываем должность и вопросы прямо в описание, чтобы не зависеть от колонок
+    full_description = f"{description}\n\n[ДОЛЖНОСТЬ: {job_title}]\n[ВОПРОСЫ: {questions_json}]"
+    
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s)",
-        (title, description, difficulty, company, category, min_salary, job_title, questions_json)
+        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary) VALUES (%s, %s, %s, %s, 'pending', %s, %s)",
+        (title, full_description, difficulty, company, category, min_salary)
     )
     conn.commit()
     conn.close()
-
 def update_case_status(case_id, new_status):
     conn = get_db_connection()
     cursor = conn.cursor()
