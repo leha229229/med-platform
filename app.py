@@ -13,7 +13,7 @@ try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
 except Exception as e:
-    st.error("⚠️ Ошибка: Не настроены секреты.")
+    st.error("⚠️ Ошибка: Не настроены секреты GROQ_API_KEY или ADMIN_PASSWORD.")
     st.stop()
 
 DB_URI = "postgresql://postgres.dnmxpwggsbyrgqsegmcm:zqE-J4a-3hh-FwL@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
@@ -23,6 +23,39 @@ DB_URI = "postgresql://postgres.dnmxpwggsbyrgqsegmcm:zqE-J4a-3hh-FwL@aws-0-eu-we
 # ==========================================
 def get_db_connection():
     return psycopg2.connect(DB_URI)
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # Создаем таблицу со всеми нужными колонками
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cases (
+            id SERIAL PRIMARY KEY,
+            title TEXT,
+            description TEXT,
+            difficulty TEXT,
+            company TEXT,
+            status TEXT DEFAULT 'pending',
+            correct_answer TEXT,
+            category TEXT,
+            min_salary INTEGER DEFAULT 40000,
+            job_title TEXT,
+            questions JSONB
+        )
+    ''')
+    
+    # Принудительно добавляем колонки, если их нет (миграция)
+    try:
+        cursor.execute("ALTER TABLE cases ADD COLUMN category TEXT")
+        cursor.execute("ALTER TABLE cases ADD COLUMN min_salary INTEGER DEFAULT 40000")
+        cursor.execute("ALTER TABLE cases ADD COLUMN job_title TEXT")
+        cursor.execute("ALTER TABLE cases ADD COLUMN questions JSONB")
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+    conn.commit()
+    conn.close()
+
+init_db()
 
 def get_approved_cases(category=None):
     conn = get_db_connection()
@@ -68,7 +101,26 @@ def delete_case(case_id):
     conn.close()
 
 # ==========================================
-# АВТОРИЗАЦИЯ И РОЛИ
+# JS-ЗАЩИТА ОТ ВСТАВКИ
+# ==========================================
+js_block_paste = """
+<script>
+    setTimeout(function() {
+        const textareas = window.parent.document.querySelectorAll('textarea');
+        textareas.forEach(ta => {
+            ta.addEventListener('paste', function(e) {
+                e.preventDefault();
+                alert('Вставка текста запрещена! Пожалуйста, введите ответ вручную.');
+            });
+            ta.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+        });
+    }, 1000);
+</script>
+"""
+st.markdown(js_block_paste, unsafe_allow_html=True)
+
+# ==========================================
+# АВТОРИЗАЦИЯ
 # ==========================================
 st.sidebar.title("Управление")
 admin_pass_input = st.sidebar.text_input("Пароль администратора", type="password")
@@ -98,10 +150,9 @@ st.set_page_config(page_title="МедПлатформа", page_icon="🩺")
 st.title("🩺 МедПлатформа")
 
 # ==========================================
-# ЛОГИКА ИНТЕРВЬЮ (ДЛЯ СТУДЕНТА)
+# ЛОГИКА ДЛЯ СТУДЕНТОВ
 # ==========================================
 if role == 'student':
-    # Если тест не активен, показываем меню сфер
     if not st.session_state.get('interview_active', False):
         st.subheader("Выберите сферу для собеседования:")
         col1, col2, col3 = st.columns(3)
@@ -125,11 +176,19 @@ if role == 'student':
             
             for c in cases:
                 with st.container():
-                    st.markdown(f"### {c['title']}")
-                    st.caption(f"🏢 {c['company']} | 💼 {c.get('job_title', 'Специалист')} | 💰 от {c['min_salary']} ₽ | 📊 {c['difficulty']}")
-                    st.write(c['description'])
+                    title = c.get('title', 'Без названия')
+                    company = c.get('company', 'Неизвестно')
+                    job_title = c.get('job_title', 'Специалист')
+                    salary = c.get('min_salary', 40000)
+                    difficulty = c.get('difficulty', 'Средний')
+                    desc = c.get('description', 'Нет описания')
+                    case_id = c.get('id')
                     
-                    if st.button(f"Пройти собеседование", key=f"start_{c['id']}"):
+                    st.markdown(f"### {title}")
+                    st.caption(f"🏢 {company} | 💼 {job_title} | 💰 от {salary} ₽ | 📊 {difficulty}")
+                    st.write(desc)
+                    
+                    if st.button(f"Пройти собеседование", key=f"start_{case_id}"):
                         st.session_state['interview_active'] = True
                         st.session_state['current_case'] = c
                         st.session_state['current_q_idx'] = 0
@@ -137,12 +196,10 @@ if role == 'student':
                         st.rerun()
                     st.divider()
                     
-    # Если тест активен, показываем вопросы
     else:
         c = st.session_state['current_case']
         questions = c.get('questions')
         
-        # Защита от пустых вопросов
         if not questions:
             st.error("⚠️ В этом кейсе пока нет вопросов. Пожалуйста, выберите другой кейс.")
             if st.button("Назад в меню"):
@@ -161,15 +218,16 @@ if role == 'student':
         
         if idx < len(questions):
             q = questions[idx]
-            st.subheader(f"{c['title']} (Вопрос {idx+1} из {len(questions)})")
+            st.subheader(f"{c.get('title', 'Собеседование')} (Вопрос {idx+1} из {len(questions)})")
+            
             with st.expander("📄 Показать описание кейса", expanded=True):
-                st.write(c['description'])
+                st.write(c.get('description', 'Нет описания'))
+                
             st.markdown(f"**Вопрос:** {q['question']}")
             
             ans = st.text_area("Ваш ответ:", key=f"q_{idx}")
             if st.button("Ответить"):
                 if ans:
-                    # Мини-фидбек через ИИ
                     with st.spinner("Проверяем ответ..."):
                         prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил. Без лишних вступлений."
                         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -187,7 +245,6 @@ if role == 'student':
                 else:
                     st.warning("Напишите ответ!")
         else:
-            # Все вопросы пройдены - итоговый вердикт
             st.success("Собеседование завершено!")
             st.subheader("Ваши ответы:")
             for item in st.session_state['interview_answers']:
@@ -203,7 +260,7 @@ if role == 'student':
                         qa_text += f"Вопрос: {item['q']}\nОтвет: {item['ans']}\nФидбек: {item['feedback']}\n\n"
                         
                     prompt = f"""
-                    Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title', 'Специалист')}" с зарплатой от {c['min_salary']} ₽.
+                    Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title', 'Специалист')}" с зарплатой от {c.get('min_salary', 40000)} ₽.
                     Вот его ответы:
                     {qa_text}
                     
@@ -250,8 +307,6 @@ elif role == 'company' or is_admin:
     # Вкладка 1: Список кейсов
     with tab1:
         st.subheader("Все одобренные кейсы" if is_admin else "База кейсов")
-        
-        # Используем SELECT *, чтобы не зависеть от названий колонок
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
@@ -263,7 +318,6 @@ elif role == 'company' or is_admin:
             
         for r in cases:
             with st.container():
-                # Безопасное извлечение (работает и с русскими, и с английскими колонками)
                 title = r.get('title') or r.get('заголовок') or 'Без названия'
                 company = r.get('company') or r.get('компания') or 'Неизвестно'
                 job_title = r.get('job_title') or r.get('должность') or 'Специалист'
@@ -309,7 +363,6 @@ elif role == 'company' or is_admin:
                     status = 'approved' if is_admin else 'pending'
                     conn = get_db_connection()
                     cursor = conn.cursor()
-                    # Используем имена колонок, которые точно есть в твоей базе (английские)
                     cursor.execute(
                         "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, job_title, questions) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (new_title, new_description, new_difficulty, new_company, status, new_category, new_salary, new_job_title, json.dumps(questions, ensure_ascii=False))
