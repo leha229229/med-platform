@@ -27,47 +27,38 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Создаем только базовые колонки
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS cases (
-            id SERIAL PRIMARY KEY,
-            title TEXT,
-            description TEXT,
-            difficulty TEXT,
-            company TEXT,
-            status TEXT DEFAULT 'pending',
-            correct_answer TEXT,
-            category TEXT,
-            min_salary INTEGER DEFAULT 40000
-        )
-    ''')
+    # Ничего не меняем в таблице, чтобы не было ошибок
     conn.commit()
     conn.close()
 
 init_db()
 
 def parse_case_row(r):
-    """Вспомогательная функция для распаковки данных из description"""
+    """Умная функция: сначала ищет в колонке questions, потом в description"""
     d = dict(r)
-    desc = d.get('description', '')
+    desc = d.get('description', '') or ''
     
-    # Значения по умолчанию
-    d['job_title'] = 'Специалист'
-    d['questions'] = None
-    
-    # Вытаскиваем должность
-    if "[ДОЛЖНОСТЬ:" in desc:
-        d['description'] = desc.split("[ДОЛЖНОСТЬ:")[0].strip()
-        d['job_title'] = desc.split("[ДОЛЖНОСТЬ:")[1].split("]")[0].strip()
-        
-    # Вытаскиваем вопросы
-    if "[ВОПРОСЫ:" in desc:
-        q_str = desc.split("[ВОПРОСЫ:")[1].split("]")[0].strip()
-        try:
-            d['questions'] = json.loads(q_str)
-        except:
-            d['questions'] = None
+    # 1. Пытаемся взять вопросы из отдельной колонки (как в твоем скрине)
+    q_from_col = d.get('questions')
+    if q_from_col:
+        if isinstance(q_from_col, str):
+            try: d['questions'] = json.loads(q_from_col)
+            except: d['questions'] = None
+        else:
+            d['questions'] = q_from_col
             
+    # 2. Если в колонке пусто — ищем в description по тегам
+    if not d.get('questions') and "[ВОПРОСЫ:" in desc:
+        q_str = desc.split("[ВОПРОСЫ:")[1].split("]")[0].strip()
+        try: d['questions'] = json.loads(q_str)
+        except: pass
+
+    # 3. Достаем должность
+    d['job_title'] = d.get('job_title') or 'Специалист'
+    if "[ДОЛЖНОСТЬ:" in desc:
+        d['job_title'] = desc.split("[ДОЛЖНОСТЬ:")[1].split("]")[0].strip()
+        d['description'] = desc.split("[ДОЛЖНОСТЬ:")[0].strip()
+        
     return d
 
 def get_approved_cases(category=None):
@@ -93,12 +84,12 @@ def add_case(title, description, difficulty, company, category, min_salary, job_
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Упаковываем всё в description
-    safe_desc = f"{description}\n\n[ДОЛЖНОСТЬ: {job_title}]\n[ВОПРОСЫ: {questions_json}]"
+    # Записываем ВСЁ и в колонку questions, и в description (для совместимости)
+    safe_desc = f"{description}\n\n[ДОЛЖНОСТЬ: {job_title}]"
     
     cursor.execute(
-        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary) VALUES (%s, %s, %s, %s, 'pending', %s, %s)",
-        (title, safe_desc, difficulty, company, category, min_salary)
+        "INSERT INTO cases (title, description, difficulty, company, status, category, min_salary, questions) VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s)",
+        (title, safe_desc, difficulty, company, category, min_salary, questions_json)
     )
     conn.commit()
     conn.close()
