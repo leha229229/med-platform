@@ -177,13 +177,11 @@ if role == 'student':
             if st.button("💊 Фарм-маркетинг", use_container_width=True):
                 st.session_state['current_category'] = 'Фарм-маркетинг'
         
-        # Возвращаем ползунок зарплаты
         target_salary = st.slider("Ваша целевая зарплата (₽)", min_value=40000, max_value=150000, value=80000, step=5000)
                 
         if 'current_category' in st.session_state:
             st.divider()
             st.subheader(f"Доступные собеседования: {st.session_state['current_category']}")
-            # Фильтруем кейсы по зарплате!
             cases = get_approved_cases(st.session_state['current_category'], target_salary)
             
             if not cases:
@@ -233,7 +231,35 @@ if role == 'student':
             st.markdown(f"**Вопрос:** {q['question']}")
             
             ans = st.text_area("Ваш ответ:", key=f"q_{idx}")
-                        if st.button("Получить итоговый вердикт и рекомендации"):
+            if st.button("Ответить"):
+                if ans:
+                    with st.spinner("Проверяем ответ..."):
+                        prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил. Без лишних вступлений и без звездочек."
+                        url = "https://api.groq.com/openai/v1/chat/completions"
+                        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+                        payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 150, "temperature": 0.1}
+                        
+                        try:
+                            res = requests.post(url, headers=headers, json=payload, timeout=15)
+                            mini_feedback = res.json()['choices'][0]['message']['content'].replace("**", "")
+                            st.session_state['interview_answers'].append({"q": q['question'], "ans": ans, "feedback": mini_feedback})
+                            st.session_state['current_q_idx'] += 1
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Ошибка: {e}")
+                else:
+                    st.warning("Напишите ответ!")
+        else:
+            st.success("Собеседование завершено!")
+            st.subheader("Ваши ответы:")
+            for item in st.session_state['interview_answers']:
+                st.markdown(f"**Вопрос:** {item['q']}")
+                st.info(f"**Ответ:** {item['ans']}")
+                st.caption(f"🤖 {item['feedback']}")
+                
+            st.divider()
+            
+            if st.button("Получить итоговый вердикт и рекомендации"):
                 with st.spinner("Формируем итог..."):
                     qa_text = ""
                     for item in st.session_state['interview_answers']:
@@ -255,7 +281,6 @@ if role == 'student':
                     
                     url = "https://api.groq.com/openai/v1/chat/completions"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                    # УВЕЛИЧИЛИ max_tokens до 1500, чтобы ничего не обрезалось
                     payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 1500, "temperature": 0.1}
                     
                     v_text, f_text = None, None
@@ -267,23 +292,20 @@ if role == 'student':
                             result_text = res.json()['choices'][0]['message']['content']
                             
                             # УМНЫЙ ПАРСЕР
-                            # Ищем вердикт (строго между кавычками)
                             verdict_match = re.search(r'"verdict"\s*:\s*"(.*?)"', result_text, re.DOTALL)
                             if verdict_match:
                                 v_text = verdict_match.group(1).strip()
                                 
-                            # Ищем фидбек (берем всё до следующей кавычки или до конца текста)
                             feedback_match = re.search(r'"feedback"\s*:\s*"(.*?)(?:"|$)', result_text, re.DOTALL)
                             if feedback_match:
                                 f_text = feedback_match.group(1).strip()
                                 
                             if v_text and f_text:
-                                break # Успех!
+                                break 
                                 
                         except Exception as e:
                             pass
                             
-                        # Если не сработало, просим исправиться
                         payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Ты выдал невалидный JSON. Строго соблюдай формат: {\"verdict\": \"...\", \"feedback\": \"...\"}. Никаких других полей!"
 
                     if v_text and f_text:
@@ -298,6 +320,7 @@ if role == 'student':
                         if result_text:
                             with st.expander("Показать сырой ответ ИИ"):
                                 st.write(result_text)
+
 # ==========================================
 # ЛОГИКА ДЛЯ КОМПАНИЙ И АДМИНА
 # ==========================================
