@@ -289,17 +289,25 @@ if role == 'student':
                     
                     for attempt in range(3):
                         try:
-                            res = requests.post(url, headers=headers, json=payload, timeout=20)
+                            res = requests.post(url, headers=headers, json=payload, timeout=30) # Увеличили таймаут
                             result_text = res.json()['choices'][0]['message']['content']
                             
-                            # Пытаемся вытащить данные регуляркой (самый надежный способ)
-                            import re
+                            # Ищем вердикт
                             verdict_match = re.search(r'"verdict"\s*:\s*"(.*?)"', result_text, re.DOTALL)
-                            feedback_match = re.search(r'"feedback"\s*:\s*"(.*?)"', result_text, re.DOTALL)
-                            
-                            if verdict_match and feedback_match:
+                            if verdict_match:
                                 v_text = verdict_match.group(1).strip()
+                                
+                            # Ищем фидбек (берем всё до конца текста, даже если нет кавычки)
+                            feedback_match = re.search(r'"feedback"\s*:\s*"(.*)', result_text, re.DOTALL)
+                            if feedback_match:
                                 f_text = feedback_match.group(1).strip()
+                                # Если фидбек закончился кавычкой или скобкой, обрезаем её
+                                if f_text.endswith('"'):
+                                    f_text = f_text[:-1]
+                                if f_text.endswith('}'):
+                                    f_text = f_text[:-1]
+                                
+                            if v_text and f_text:
                                 break # Успех!
                                 
                         except Exception as e:
