@@ -273,11 +273,11 @@ if role == 'student':
                     
                     Твоя задача:
                     1. Проанализировать ответы.
-                    2. Вынести вердикт: "Повысить до Z ₽" (если ответы идеальны), "Оправдал зарплату" (если хорошие) или "Снизить до Y ₽" (если слабые).
-                    3. Написать общий фидбек (сильные/слабые стороны) и план развития.
+                    2. Вынести вердикт: "Повысить до Z ₽" (если идеально), "Оправдал зарплату" (если хорошо) или "Снизить до Y ₽" (если слабо).
+                    3. Написать общий фидбек и план развития.
                     
-                    ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов, только фигурные скобки.
-                    Пример: {{"verdict": "Рекомендуем повысить до 120000 ₽", "feedback": "Кандидат показал отличные знания..."}}
+                    ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов.
+                    Пример: {{"verdict": "Оправдал зарплату", "feedback": "Текст фидбека..."}}
                     """
                     
                     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -285,32 +285,27 @@ if role == 'student':
                     payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 850, "temperature": 0.1}
                     
                     v_text, f_text = None, None
+                    result_text = "" # Чтобы не было ошибки NameError
                     
                     for attempt in range(3):
                         try:
                             res = requests.post(url, headers=headers, json=payload, timeout=20)
                             result_text = res.json()['choices'][0]['message']['content']
                             
-                            # Очищаем от маркдауна и ищем JSON
-                            clean_text = result_text.replace("```json", "").replace("```", "").strip()
+                            # Пытаемся вытащить данные регуляркой (самый надежный способ)
+                            import re
+                            verdict_match = re.search(r'"verdict"\s*:\s*"(.*?)"', result_text, re.DOTALL)
+                            feedback_match = re.search(r'"feedback"\s*:\s*"(.*?)"', result_text, re.DOTALL)
                             
-                            # Ищем первую { и последнюю }
-                            start_idx = clean_text.find('{')
-                            end_idx = clean_text.rfind('}')
-                            
-                            if start_idx != -1 and end_idx != -1:
-                                json_str = clean_text[start_idx:end_idx+1]
-                                data = json.loads(json_str)
-                                v_text = data.get("verdict", "")
-                                f_text = data.get("feedback", "")
+                            if verdict_match and feedback_match:
+                                v_text = verdict_match.group(1).strip()
+                                f_text = feedback_match.group(1).strip()
+                                break # Успех!
                                 
-                                if v_text and f_text:
-                                    break # Успех, выходим из цикла
-                                    
                         except Exception as e:
                             pass
                             
-                        # Если не сработало, просим исправиться (добавляем в промпт)
+                        # Если не сработало, просим исправиться
                         payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Ты выдал невалидный JSON. Строго соблюдай формат: {\"verdict\": \"...\", \"feedback\": \"...\"}"
 
                     if v_text and f_text:
@@ -322,9 +317,9 @@ if role == 'student':
                             st.rerun()
                     else:
                         st.error("⚠️ Нейросеть выдала ошибку формата. Попробуйте нажать кнопку еще раз.")
-                        # Для отладки покажем, что она написала
-                        with st.expander("Показать сырой ответ ИИ"):
-                            st.write(result_text)
+                        if result_text:
+                            with st.expander("Показать сырой ответ ИИ"):
+                                st.write(result_text)
 # ==========================================
 # ЛОГИКА ДЛЯ КОМПАНИЙ И АДМИНА
 # ==========================================
