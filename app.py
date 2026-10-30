@@ -27,18 +27,15 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Ничего не меняем в таблице, чтобы не было ошибок
     conn.commit()
     conn.close()
 
 init_db()
 
 def parse_case_row(r):
-    """Умная функция: сначала ищет в колонке questions, потом в description"""
     d = dict(r)
     desc = d.get('description', '') or ''
     
-    # 1. Пытаемся взять вопросы из отдельной колонки (как в твоем скрине)
     q_from_col = d.get('questions')
     if q_from_col:
         if isinstance(q_from_col, str):
@@ -47,13 +44,11 @@ def parse_case_row(r):
         else:
             d['questions'] = q_from_col
             
-    # 2. Если в колонке пусто — ищем в description по тегам
     if not d.get('questions') and "[ВОПРОСЫ:" in desc:
         q_str = desc.split("[ВОПРОСЫ:")[1].split("]")[0].strip()
         try: d['questions'] = json.loads(q_str)
         except: pass
 
-    # 3. Достаем должность
     d['job_title'] = d.get('job_title') or 'Специалист'
     if "[ДОЛЖНОСТЬ:" in desc:
         d['job_title'] = desc.split("[ДОЛЖНОСТЬ:")[1].split("]")[0].strip()
@@ -61,13 +56,22 @@ def parse_case_row(r):
         
     return d
 
-def get_approved_cases(category=None):
+def get_approved_cases(category=None, max_salary=None):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    
+    query = "SELECT * FROM cases WHERE status = 'approved'"
+    params = []
+    
     if category:
-        cursor.execute("SELECT * FROM cases WHERE status = 'approved' AND category = %s", (category,))
-    else:
-        cursor.execute("SELECT * FROM cases WHERE status = 'approved'")
+        query += " AND category = %s"
+        params.append(category)
+        
+    if max_salary:
+        query += " AND min_salary <= %s"
+        params.append(max_salary)
+        
+    cursor.execute(query, tuple(params))
     rows = cursor.fetchall()
     conn.close()
     return [parse_case_row(r) for r in rows]
@@ -83,8 +87,6 @@ def get_pending_cases():
 def add_case(title, description, difficulty, company, category, min_salary, job_title, questions_json):
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # Записываем ВСЁ и в колонку questions, и в description (для совместимости)
     safe_desc = f"{description}\n\n[ДОЛЖНОСТЬ: {job_title}]"
     
     cursor.execute(
@@ -162,7 +164,8 @@ st.title("🩺 МедПлатформа")
 # ==========================================
 if role == 'student':
     if not st.session_state.get('interview_active', False):
-        st.subheader("Выберите сферу для собеседования:")
+        st.subheader("Выберите сферу и желаемую зарплату:")
+        
         col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("🧪 НИИ", use_container_width=True):
@@ -173,14 +176,18 @@ if role == 'student':
         with col3:
             if st.button("💊 Фарм-маркетинг", use_container_width=True):
                 st.session_state['current_category'] = 'Фарм-маркетинг'
+        
+        # Возвращаем ползунок зарплаты
+        target_salary = st.slider("Ваша целевая зарплата (₽)", min_value=40000, max_value=150000, value=80000, step=5000)
                 
         if 'current_category' in st.session_state:
             st.divider()
             st.subheader(f"Доступные собеседования: {st.session_state['current_category']}")
-            cases = get_approved_cases(st.session_state['current_category'])
+            # Фильтруем кейсы по зарплате!
+            cases = get_approved_cases(st.session_state['current_category'], target_salary)
             
             if not cases:
-                st.info("В этой сфере пока нет кейсов.")
+                st.info(f"В сфере «{st.session_state['current_category']}» пока нет кейсов с зарплатой до {target_salary} ₽. Попробуйте выбрать другую сферу или повысить планку.")
             
             for c in cases:
                 with st.container():
@@ -229,14 +236,14 @@ if role == 'student':
             if st.button("Ответить"):
                 if ans:
                     with st.spinner("Проверяем ответ..."):
-                        prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил."
+                        prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил. Без лишних вступлений и без звездочек."
                         url = "https://api.groq.com/openai/v1/chat/completions"
                         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
                         payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 150, "temperature": 0.1}
                         
                         try:
                             res = requests.post(url, headers=headers, json=payload, timeout=15)
-                            mini_feedback = res.json()['choices'][0]['message']['content']
+                            mini_feedback = res.json()['choices'][0]['message']['content'].replace("**", "")
                             st.session_state['interview_answers'].append({"q": q['question'], "ans": ans, "feedback": mini_feedback})
                             st.session_state['current_q_idx'] += 1
                             st.rerun()
@@ -259,6 +266,7 @@ if role == 'student':
                     for item in st.session_state['interview_answers']:
                         qa_text += f"Вопрос: {item['q']}\nОтвет: {item['ans']}\nФидбек: {item['feedback']}\n\n"
                         
+                    # Запрещаем звездочки в промпте
                     prompt = f"""
                     Ты — HR-директор. Студент проходил собеседование на должность "{c.get('job_title', 'Специалист')}" с зарплатой от {c.get('min_salary', 40000)} ₽.
                     Вот его ответы:
@@ -267,6 +275,8 @@ if role == 'student':
                     Сделай вывод:
                     1. Вердикт (Одобрено на X / Рекомендуем Y).
                     2. Общий фидбек: сильные и слабые стороны, план развития.
+                    
+                    ВАЖНО: Пиши обычным текстом. НЕ ИСПОЛЬЗУЙ символы Markdown (звездочки **, решетки #).
                     
                     ФОРМАТ:
                     Вердикт: [Текст]
@@ -280,11 +290,17 @@ if role == 'student':
                         res = requests.post(url, headers=headers, json=payload, timeout=15)
                         result_text = res.json()['choices'][0]['message']['content']
                         
-                        verdict = re.search(r'Вердикт:\s*(.*?)(?=\n|Фидбек|$)', result_text, re.IGNORECASE | re.DOTALL)
-                        feedback = re.search(r'Фидбек:\s*(.*)', result_text, re.IGNORECASE | re.DOTALL)
+                        # Очищаем от звездочек перед парсингом
+                        clean_text = result_text.replace("**", "").replace("#", "")
                         
-                        st.success(f"**Вердикт:** {verdict.group(1).strip() if verdict else 'Одобрено'}")
-                        st.info(f"**Фидбек:** {feedback.group(1).strip() if feedback else ''}")
+                        verdict = re.search(r'Вердикт:\s*(.*?)(?=\n|Фидбек|$)', clean_text, re.IGNORECASE | re.DOTALL)
+                        feedback = re.search(r'Фидбек:\s*(.*)', clean_text, re.IGNORECASE | re.DOTALL)
+                        
+                        v_text = verdict.group(1).strip() if verdict else 'Одобрено (по результатам)'
+                        f_text = feedback.group(1).strip() if feedback else clean_text
+                        
+                        st.success(f"**Вердикт:** {v_text}")
+                        st.info(f"**Фидбек:** {f_text}")
                         
                         if st.button("На главную"):
                             st.session_state['interview_active'] = False
