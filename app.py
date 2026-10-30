@@ -273,57 +273,46 @@ if role == 'student':
                     
                     Твоя задача:
                     1. Проанализировать ответы.
-                    2. Оценить реальный уровень кандидата (Junior, Middle, Senior).
-                    3. Сравнить его уровень с заявленной зарплатой ({c.get('min_salary', 40000)} ₽).
+                    2. Вынести вердикт: "Повысить до Z ₽" (если ответы идеальны), "Оправдал зарплату" (если хорошие) или "Снизить до Y ₽" (если слабые).
+                    3. Написать общий фидбек (сильные/слабые стороны) и план развития.
                     
-                    ПРАВИЛА ВЕРДИКТА:
-                    - Если ответы блестящие (глубокие, аргументированные, без ошибок) — ПОВЫСЬ зарплату. Напиши: "Рекомендуем повысить до Z ₽".
-                    - Если ответы хорошие, но не идеальные — оставь как есть: "Оправдал заявленную зарплату".
-                    - Если ответы слабые или с ошибками — СНИЗЬ зарплату. Напиши: "Рекомендуем снизить до Y ₽".
-                    
-                    4. Написать общий фидбек (сильные/слабые стороны) и план развития.
-                    
-                    ВАЖНО: 
-                    - Будь краток. Твой ответ должен занимать не более 700 токенов.
-                    - Пиши обычным текстом. НЕ ИСПОЛЬЗУЙ символы Markdown (звездочки **, решетки #).
-                    - Обязательно напиши конкретную цифру (повышаем/оставляем/снижаем).
-                    
-                    ФОРМАТ ОТВЕТА СТРОГО ТАКОЙ:
-                    Вердикт: [Текст с указанием новой зарплаты]
-                    Фидбек: [Текст разбора и плана развития]
+                    ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов, только фигурные скобки.
+                    Пример: {{"verdict": "Рекомендуем повысить до 120000 ₽", "feedback": "Кандидат показал отличные знания..."}}
                     """
                     
                     url = "https://api.groq.com/openai/v1/chat/completions"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.1}
+                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 850, "temperature": 0.1}
                     
-                    # ДЕЛАЕМ ДО 3-Х ПОПЫТОК
-                    max_retries = 3
                     v_text, f_text = None, None
                     
-                    for attempt in range(max_retries):
+                    for attempt in range(3):
                         try:
                             res = requests.post(url, headers=headers, json=payload, timeout=20)
                             result_text = res.json()['choices'][0]['message']['content']
                             
-                            # Чистим от звездочек
-                            clean_text = result_text.replace("**", "").replace("#", "")
+                            # Очищаем от маркдауна и ищем JSON
+                            clean_text = result_text.replace("```json", "").replace("```", "").strip()
                             
-                            # Ищем вердикт и фидбек
-                            verdict_match = re.search(r'Вердикт:\s*(.*?)(?=\n|Фидбек|$)', clean_text, re.IGNORECASE | re.DOTALL)
-                            feedback_match = re.search(r'Фидбек:\s*(.*)', clean_text, re.IGNORECASE | re.DOTALL)
+                            # Ищем первую { и последнюю }
+                            start_idx = clean_text.find('{')
+                            end_idx = clean_text.rfind('}')
                             
-                            if verdict_match and feedback_match:
-                                v_text = verdict_match.group(1).strip()
-                                f_text = feedback_match.group(1).strip()
-                                break # Если нашли — выходим из цикла
-                            
-                            # Если не нашли, просим исправиться
-                            payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Твой предыдущий ответ не содержал слов 'Вердикт:' и 'Фидбек:'. Строго соблюдай формат!"
+                            if start_idx != -1 and end_idx != -1:
+                                json_str = clean_text[start_idx:end_idx+1]
+                                data = json.loads(json_str)
+                                v_text = data.get("verdict", "")
+                                f_text = data.get("feedback", "")
+                                
+                                if v_text and f_text:
+                                    break # Успех, выходим из цикла
+                                    
                         except Exception as e:
-                            if attempt == max_retries - 1:
-                                st.error(f"Ошибка сети: {e}")
-                    
+                            pass
+                            
+                        # Если не сработало, просим исправиться (добавляем в промпт)
+                        payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Ты выдал невалидный JSON. Строго соблюдай формат: {\"verdict\": \"...\", \"feedback\": \"...\"}"
+
                     if v_text and f_text:
                         st.success(f"**Вердикт:** {v_text}")
                         st.info(f"**Фидбек:** {f_text}")
@@ -332,7 +321,10 @@ if role == 'student':
                             st.session_state['interview_active'] = False
                             st.rerun()
                     else:
-                        st.error("⚠️ Нейросеть не смогла выдать ответ в правильном формате. Попробуйте еще раз.")
+                        st.error("⚠️ Нейросеть выдала ошибку формата. Попробуйте нажать кнопку еще раз.")
+                        # Для отладки покажем, что она написала
+                        with st.expander("Показать сырой ответ ИИ"):
+                            st.write(result_text)
 # ==========================================
 # ЛОГИКА ДЛЯ КОМПАНИЙ И АДМИНА
 # ==========================================
