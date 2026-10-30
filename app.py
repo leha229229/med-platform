@@ -233,34 +233,7 @@ if role == 'student':
             st.markdown(f"**Вопрос:** {q['question']}")
             
             ans = st.text_area("Ваш ответ:", key=f"q_{idx}")
-            if st.button("Ответить"):
-                if ans:
-                    with st.spinner("Проверяем ответ..."):
-                        prompt = f"Вопрос: {q['question']}\nЭталон: {q['correct_answer']}\nОтвет студента: {ans}\n\nОцени кратко (1-2 предложения), верно ли студент ответил, и что упустил. Без лишних вступлений и без звездочек."
-                        url = "https://api.groq.com/openai/v1/chat/completions"
-                        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                        payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 150, "temperature": 0.1}
-                        
-                        try:
-                            res = requests.post(url, headers=headers, json=payload, timeout=15)
-                            mini_feedback = res.json()['choices'][0]['message']['content'].replace("**", "")
-                            st.session_state['interview_answers'].append({"q": q['question'], "ans": ans, "feedback": mini_feedback})
-                            st.session_state['current_q_idx'] += 1
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Ошибка: {e}")
-                else:
-                    st.warning("Напишите ответ!")
-        else:
-            st.success("Собеседование завершено!")
-            st.subheader("Ваши ответы:")
-            for item in st.session_state['interview_answers']:
-                st.markdown(f"**Вопрос:** {item['q']}")
-                st.info(f"**Ответ:** {item['ans']}")
-                st.caption(f"🤖 {item['feedback']}")
-                
-            st.divider()
-            if st.button("Получить итоговый вердикт и рекомендации"):
+                        if st.button("Получить итоговый вердикт и рекомендации"):
                 with st.spinner("Формируем итог..."):
                     qa_text = ""
                     for item in st.session_state['interview_answers']:
@@ -276,36 +249,33 @@ if role == 'student':
                     2. Вынести вердикт: "Повысить до Z ₽" (если идеально), "Оправдал зарплату" (если хорошо) или "Снизить до Y ₽" (если слабо).
                     3. Написать общий фидбек и план развития.
                     
-                    ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов.
+                    ВАЖНО: Выведи ответ СТРОГО в формате JSON. Никаких других слов, только фигурные скобки. Не добавляй лишних полей (никаких development_plan и т.д.). Только verdict и feedback.
                     Пример: {{"verdict": "Оправдал зарплату", "feedback": "Текст фидбека..."}}
                     """
                     
                     url = "https://api.groq.com/openai/v1/chat/completions"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 850, "temperature": 0.1}
+                    # УВЕЛИЧИЛИ max_tokens до 1500, чтобы ничего не обрезалось
+                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 1500, "temperature": 0.1}
                     
                     v_text, f_text = None, None
-                    result_text = "" # Чтобы не было ошибки NameError
+                    result_text = "" 
                     
                     for attempt in range(3):
                         try:
-                            res = requests.post(url, headers=headers, json=payload, timeout=30) # Увеличили таймаут
+                            res = requests.post(url, headers=headers, json=payload, timeout=30)
                             result_text = res.json()['choices'][0]['message']['content']
                             
-                            # Ищем вердикт
+                            # УМНЫЙ ПАРСЕР
+                            # Ищем вердикт (строго между кавычками)
                             verdict_match = re.search(r'"verdict"\s*:\s*"(.*?)"', result_text, re.DOTALL)
                             if verdict_match:
                                 v_text = verdict_match.group(1).strip()
                                 
-                            # Ищем фидбек (берем всё до конца текста, даже если нет кавычки)
-                            feedback_match = re.search(r'"feedback"\s*:\s*"(.*)', result_text, re.DOTALL)
+                            # Ищем фидбек (берем всё до следующей кавычки или до конца текста)
+                            feedback_match = re.search(r'"feedback"\s*:\s*"(.*?)(?:"|$)', result_text, re.DOTALL)
                             if feedback_match:
                                 f_text = feedback_match.group(1).strip()
-                                # Если фидбек закончился кавычкой или скобкой, обрезаем её
-                                if f_text.endswith('"'):
-                                    f_text = f_text[:-1]
-                                if f_text.endswith('}'):
-                                    f_text = f_text[:-1]
                                 
                             if v_text and f_text:
                                 break # Успех!
@@ -314,7 +284,7 @@ if role == 'student':
                             pass
                             
                         # Если не сработало, просим исправиться
-                        payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Ты выдал невалидный JSON. Строго соблюдай формат: {\"verdict\": \"...\", \"feedback\": \"...\"}"
+                        payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Ты выдал невалидный JSON. Строго соблюдай формат: {\"verdict\": \"...\", \"feedback\": \"...\"}. Никаких других полей!"
 
                     if v_text and f_text:
                         st.success(f"**Вердикт:** {v_text}")
