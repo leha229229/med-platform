@@ -278,39 +278,53 @@ if role == 'student':
                     4. Написать общий фидбек (сильные/слабые стороны) и план развития.
                     
                     ВАЖНО: 
-                    - Обязательно укажи конкретную сумму, на которую тянет кандидат.
                     - Пиши обычным текстом. НЕ ИСПОЛЬЗУЙ символы Markdown (звездочки **, решетки #).
                     
                     ФОРМАТ ОТВЕТА СТРОГО ТАКОЙ:
-                    Вердикт: [Текст с указанием зарплаты]
-                    Фидбек: [Текст разбора и плана развития]
+                    Вердикт: [Текст]
+                    Фидбек: [Текст]
                     """
+                    
                     url = "https://api.groq.com/openai/v1/chat/completions"
                     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 400, "temperature": 0.1}
+                    payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500, "temperature": 0.1}
                     
-                    try:
-                        res = requests.post(url, headers=headers, json=payload, timeout=15)
-                        result_text = res.json()['choices'][0]['message']['content']
-                        
-                        # Очищаем от звездочек перед парсингом
-                        clean_text = result_text.replace("**", "").replace("#", "")
-                        
-                        verdict = re.search(r'Вердикт:\s*(.*?)(?=\n|Фидбек|$)', clean_text, re.IGNORECASE | re.DOTALL)
-                        feedback = re.search(r'Фидбек:\s*(.*)', clean_text, re.IGNORECASE | re.DOTALL)
-                        
-                        v_text = verdict.group(1).strip() if verdict else 'Одобрено (по результатам)'
-                        f_text = feedback.group(1).strip() if feedback else clean_text
-                        
+                    # ДЕЛАЕМ ДО 3-Х ПОПЫТОК
+                    max_retries = 3
+                    v_text, f_text = None, None
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            res = requests.post(url, headers=headers, json=payload, timeout=20)
+                            result_text = res.json()['choices'][0]['message']['content']
+                            
+                            # Чистим от звездочек
+                            clean_text = result_text.replace("**", "").replace("#", "")
+                            
+                            # Ищем вердикт и фидбек
+                            verdict_match = re.search(r'Вердикт:\s*(.*?)(?=\n|Фидбек|$)', clean_text, re.IGNORECASE | re.DOTALL)
+                            feedback_match = re.search(r'Фидбек:\s*(.*)', clean_text, re.IGNORECASE | re.DOTALL)
+                            
+                            if verdict_match and feedback_match:
+                                v_text = verdict_match.group(1).strip()
+                                f_text = feedback_match.group(1).strip()
+                                break # Если нашли — выходим из цикла
+                            
+                            # Если не нашли, просим исправиться
+                            payload["messages"][0]["content"] += "\n\nВНИМАНИЕ: Твой предыдущий ответ не содержал слов 'Вердикт:' и 'Фидбек:'. Строго соблюдай формат!"
+                        except Exception as e:
+                            if attempt == max_retries - 1:
+                                st.error(f"Ошибка сети: {e}")
+                    
+                    if v_text and f_text:
                         st.success(f"**Вердикт:** {v_text}")
                         st.info(f"**Фидбек:** {f_text}")
                         
                         if st.button("На главную"):
                             st.session_state['interview_active'] = False
                             st.rerun()
-                    except Exception as e:
-                        st.error(f"Ошибка: {e}")
-
+                    else:
+                        st.error("⚠️ Нейросеть не смогла выдать ответ в правильном формате. Попробуйте еще раз.")
 # ==========================================
 # ЛОГИКА ДЛЯ КОМПАНИЙ И АДМИНА
 # ==========================================
